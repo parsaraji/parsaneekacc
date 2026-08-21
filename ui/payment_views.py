@@ -462,6 +462,7 @@ class PaymentsAndInvoicingWidget(QWidget):
 
     def record_new_payment(self):
         dlg = RecordPaymentDialog(db_path=self.db_path, parent=self)
+        dlg.setWindowState(dlg.windowState() | Qt.WindowMaximized)
         if dlg.exec() == QDialog.Accepted:
             self.load_payments()
 

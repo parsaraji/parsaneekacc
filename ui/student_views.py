@@ -195,12 +195,13 @@ class StudentProfileDialog(QDialog):
         info_h.addWidget(QLabel(f"مجموع پرداختی‌های وصول‌شده: {format_currency(fin['total_paid'])}"))
 
         debt_amt = fin['total_pending_debt']
+        net_bal = fin.get('net_balance', 0.0)
         if debt_amt > 0:
             status_str = f"وضعیت حساب: بدهکار ({format_currency(debt_amt)})"
             lbl_status = QLabel(status_str)
             lbl_status.setStyleSheet("color: #E74C3C; font-weight: bold; font-size: 13px;")
-        elif debt_amt < 0:
-            status_str = f"وضعیت حساب: بستانکار ({format_currency(abs(debt_amt))})"
+        elif net_bal > 0 and fin.get('total_paid', 0) > 0:
+            status_str = f"وضعیت حساب: بستانکار / دارای پیش‌پرداخت ({format_currency(net_bal)})"
             lbl_status = QLabel(status_str)
             lbl_status.setStyleSheet("color: #2ECC71; font-weight: bold; font-size: 13px;")
         else:
@@ -211,10 +212,17 @@ class StudentProfileDialog(QDialog):
         info_h.addWidget(lbl_status)
         sum_layout.addLayout(info_h)
 
-        # 1. Pending Debts Table
+        # 1. Pending Debts Table & Private Class Debt Creation
+        h_debt_top = QHBoxLayout()
         lbl_debts = QLabel("۱. لیست بدهی‌های معوق و تسویه‌نشده دانش‌آموز (مستقل از پرداختی‌ها):")
         lbl_debts.setStyleSheet("font-weight: bold; color: #C0392B; margin-top: 5px;")
-        sum_layout.addWidget(lbl_debts)
+        btn_add_private_class = QPushButton("ثبت کلاس خصوصی / بدهی سفارشی +")
+        btn_add_private_class.setProperty("accent", "true")
+        btn_add_private_class.clicked.connect(self.add_private_class_charge)
+        h_debt_top.addWidget(lbl_debts)
+        h_debt_top.addStretch()
+        h_debt_top.addWidget(btn_add_private_class)
+        sum_layout.addLayout(h_debt_top)
 
         self.tbl_pending = QTableWidget()
         self.tbl_pending.setColumnCount(5)
@@ -337,6 +345,57 @@ class StudentProfileDialog(QDialog):
             self.tbl_paid.setItem(r, 3, QTableWidgetItem(format_currency(p["amount"])))
             self.tbl_paid.setItem(r, 4, QTableWidgetItem(p.get("bank_reference_number") or p.get("unique_code") or "-"))
 
+    def add_private_class_charge(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("ثبت کلاس خصوصی با شهریه دلخواه")
+        dlg.resize(400, 220)
+        form = QFormLayout(dlg)
+
+        txt_title = QLineEdit("کلاس خصوصی")
+        spn_fee = QDoubleSpinBox()
+        spn_fee.setRange(10000, 1000000000)
+        spn_fee.setValue(500000)
+        spn_fee.setSingleStep(50000)
+        spn_fee.setDecimals(0)
+
+        form.addRow("عنوان کلاس / خدمت:", txt_title)
+        form.addRow("مبلغ شهریه (تومان):", spn_fee)
+
+        btn_save = QPushButton("ثبت بدهی")
+        btn_save.setProperty("accent", "true")
+        form.addRow(btn_save)
+
+        def save():
+            title = txt_title.text().strip()
+            fee = spn_fee.value()
+            if not title or fee <= 0:
+                QMessageBox.warning(dlg, "خطا", "لطفاً عنوان و مبلغ معتبر وارد کنید.")
+                return
+
+            cfg_repo = ConfigRepository(self.db_path)
+            ptypes = cfg_repo.list_payment_types()
+            pt_id = 1
+            for pt in ptypes:
+                if "کلاس" in pt["name"] or "شهریه" in pt["name"]:
+                    pt_id = pt["id"]
+                    break
+
+            self.payment_repo.record_payment(
+                student_id=self.student_id,
+                payment_type_id=pt_id,
+                amount=fee,
+                method="cash",
+                description=f"کلاس خصوصی: {title}",
+                status="pending",
+                create_invoice=False
+            )
+            QMessageBox.information(dlg, "موفقیت", "بدهی کلاس خصوصی با موفقیت به بدهی‌های معوق دانش‌آموز اضافه گردید.")
+            dlg.accept()
+            self.load_financial_ledgers()
+
+        btn_save.clicked.connect(save)
+        dlg.exec()
+
     def delete_debt(self, debt_id: int):
         if QMessageBox.question(self, "تأیید حذف بدهی", "آیا از حذف کامل این بدهی از حساب دانش‌آموز اطمینان دارید؟") == QMessageBox.Yes:
             self.payment_repo.delete_payment(debt_id)
@@ -443,6 +502,9 @@ class StudentManagementWidget(QWidget):
         self.cmb_status_filter.addItem("فارغ‌التحصیل", "graduated")
         self.cmb_status_filter.currentIndexChanged.connect(self.load_students)
 
+        self.btn_refresh = QPushButton("بروزرسانی لیست")
+        self.btn_refresh.clicked.connect(self.load_students)
+
         self.btn_add = QPushButton(" دانش‌آموز جدید +")
         self.btn_add.setProperty("accent", "true")
         self.btn_add.clicked.connect(self.add_student)
@@ -451,6 +513,7 @@ class StudentManagementWidget(QWidget):
         top_bar.addWidget(self.txt_search, 2)
         top_bar.addWidget(QLabel("فیلتر وضعیت:"))
         top_bar.addWidget(self.cmb_status_filter, 1)
+        top_bar.addWidget(self.btn_refresh)
         top_bar.addWidget(self.btn_add)
 
         layout.addLayout(top_bar)

@@ -76,14 +76,17 @@ class FinancialEngine:
 
         conn.close()
 
-        # Balance convention: negative means debt, positive means credit.
-        # Pending payment entries represent expected balance / debt.
+        # Balance convention:
+        # total_pending represents expected pending debts.
+        # net_balance = total_paid - total_pending.
+        # Positive net_balance indicates advance payment / credit balance (پیش‌پرداخت/طلبکار).
         return {
             "student_id": student_id,
             "total_paid": total_paid,
             "total_pending_debt": total_pending,
             "total_discount": total_discount,
-            "net_balance": total_paid - total_pending
+            "net_balance": total_paid - total_pending,
+            "is_creditor": (total_paid > total_pending)
         }
 
     def get_institute_financial_summary(self, date_from: str = "", date_to: str = "") -> Dict[str, Any]:
