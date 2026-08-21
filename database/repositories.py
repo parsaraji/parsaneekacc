@@ -362,7 +362,8 @@ class ClassRepository:
 
     def update_class(self, class_id: int, code: str, name: str, teacher_name: str,
                      capacity: int, start_date: str, status: str, tuition_fee: float = 0,
-                     book_fee: float = 0, other_fee: float = 0, other_fee_title: str = "هزینه جانبی") -> None:
+                     book_fee: float = 0, other_fee: float = 0, other_fee_title: str = "هزینه جانبی",
+                     book_ids: Optional[List[int]] = None) -> None:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
@@ -371,8 +372,25 @@ class ClassRepository:
                WHERE id=?""",
             (code, name, teacher_name, capacity, start_date, status, tuition_fee, book_fee, other_fee, other_fee_title, class_id)
         )
+        if book_ids is not None:
+            cursor.execute("DELETE FROM class_books WHERE class_id = ?", (class_id,))
+            for bid in book_ids:
+                cursor.execute("INSERT OR IGNORE INTO class_books (class_id, book_id) VALUES (?, ?)", (class_id, bid))
         conn.commit()
         conn.close()
+
+    def get_class_books(self, class_id: int) -> List[Dict[str, Any]]:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT b.* FROM books b
+               JOIN class_books cb ON b.id = cb.book_id
+               WHERE cb.class_id = ?""",
+            (class_id,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
 
     def get_by_id(self, class_id: int) -> Optional[Dict[str, Any]]:
         conn = get_connection(self.db_path)
@@ -406,7 +424,7 @@ class ClassRepository:
         conn.close()
         return [dict(r) for r in rows]
 
-    def add_enrollment(self, class_id: int, student_id: int) -> int:
+    def add_enrollment(self, class_id: int, student_id: int, selected_book_ids: Optional[List[int]] = None) -> int:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -434,57 +452,83 @@ class ClassRepository:
             (student_id, term_id, now)
         )
 
+        # Determine books to charge and reduce stock on
+        books_to_process = []
+        if selected_book_ids is not None:
+            if selected_book_ids:
+                placeholders = ",".join("?" for _ in selected_book_ids)
+                cursor.execute(f"SELECT * FROM books WHERE id IN ({placeholders})", selected_book_ids)
+                books_to_process = [dict(r) for r in cursor.fetchall()]
+        else:
+            cursor.execute(
+                """SELECT b.* FROM books b
+                   JOIN class_books cb ON b.id = cb.book_id
+                   WHERE cb.class_id = ?""",
+                (class_id,)
+            )
+            books_to_process = [dict(r) for r in cursor.fetchall()]
+
+        # Directly reduce stock using current connection cursor (avoids database is locked error)
+        for bk in books_to_process:
+            cursor.execute("UPDATE books SET stock_quantity = stock_quantity - 1 WHERE id = ?", (bk["id"],))
+
         def get_type_id(pt_name):
             cursor.execute("SELECT id FROM payment_types WHERE name = ?", (pt_name,))
             r = cursor.fetchone()
             return r["id"] if r else 1
 
-        p_repo = PaymentRepository(self.db_path)
+        p_code_num = 1
 
-        # Reduce stock for books linked to this class
-        cursor.execute("SELECT book_id FROM class_books WHERE class_id = ?", (class_id,))
-        c_books = cursor.fetchall()
-        if c_books:
-            b_repo = BookRepository(self.db_path)
-            for cb in c_books:
-                b_repo.reduce_stock(cb["book_id"], 1)
+        # Insert tuition debt
+        if cls["tuition_fee"] > 0:
+            cursor.execute("SELECT MAX(id) FROM payments")
+            max_id = cursor.fetchone()[0] or 0
+            p_code = f"PAY-{max_id + 1:06d}"
+            cursor.execute(
+                """INSERT INTO payments (
+                    unique_code, student_id, term_id, payment_type_id, amount,
+                    discount_percent, discount_amount, late_fee_amount, method,
+                    description, due_date, paid_date, paid_time, is_installment,
+                    installment_no, installment_total, status
+                ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 'cash', ?, '', ?, ?, 0, 1, 1, 'pending')""",
+                (p_code, student_id, term_id, get_type_id("شهریه"), cls["tuition_fee"],
+                 f"شهریه کلاس {cls['name']} ({cls['code']})", now[:10], now[11:])
+            )
+
+        # Insert book debts for each processed book
+        for bk in books_to_process:
+            if bk["sale_price"] > 0:
+                cursor.execute("SELECT MAX(id) FROM payments")
+                max_id = cursor.fetchone()[0] or 0
+                p_code = f"PAY-{max_id + 1:06d}"
+                cursor.execute(
+                    """INSERT INTO payments (
+                        unique_code, student_id, term_id, payment_type_id, amount,
+                        discount_percent, discount_amount, late_fee_amount, method,
+                        description, due_date, paid_date, paid_time, is_installment,
+                        installment_no, installment_total, status
+                    ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 'cash', ?, '', ?, ?, 0, 1, 1, 'pending')""",
+                    (p_code, student_id, term_id, get_type_id("کتاب"), bk["sale_price"],
+                     f"کتاب کلاس {cls['name']}: {bk['title']}", now[:10], now[11:])
+                )
+
+        # Insert other fee debt
+        if cls["other_fee"] > 0:
+            cursor.execute("SELECT MAX(id) FROM payments")
+            max_id = cursor.fetchone()[0] or 0
+            p_code = f"PAY-{max_id + 1:06d}"
+            cursor.execute(
+                """INSERT INTO payments (
+                    unique_code, student_id, term_id, payment_type_id, amount,
+                    discount_percent, discount_amount, late_fee_amount, method,
+                    description, due_date, paid_date, paid_time, is_installment,
+                    installment_no, installment_total, status
+                ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 'cash', ?, '', ?, ?, 0, 1, 1, 'pending')""",
+                (p_code, student_id, term_id, get_type_id("هزینه‌های جانبی"), cls["other_fee"],
+                 f"{cls['other_fee_title'] or 'هزینه جانبی'} - کلاس {cls['name']}", now[:10], now[11:])
+            )
 
         conn.commit()
-
-        if cls["tuition_fee"] > 0:
-            p_repo.record_payment(
-                student_id=student_id,
-                payment_type_id=get_type_id("شهریه"),
-                amount=cls["tuition_fee"],
-                method="cash",
-                term_id=term_id,
-                description=f"شهریه کلاس {cls['name']} ({cls['code']})",
-                status="pending",
-                create_invoice=False
-            )
-        if cls["book_fee"] > 0:
-            p_repo.record_payment(
-                student_id=student_id,
-                payment_type_id=get_type_id("کتاب"),
-                amount=cls["book_fee"],
-                method="cash",
-                term_id=term_id,
-                description=f"کتاب کلاس {cls['name']} ({cls['code']})",
-                status="pending",
-                create_invoice=False
-            )
-        if cls["other_fee"] > 0:
-            p_repo.record_payment(
-                student_id=student_id,
-                payment_type_id=get_type_id("هزینه‌های جانبی"),
-                amount=cls["other_fee"],
-                method="cash",
-                term_id=term_id,
-                description=f"{cls['other_fee_title'] or 'هزینه جانبی'} - کلاس {cls['name']}",
-                status="pending",
-                create_invoice=False
-            )
-
         conn.close()
         return enrollment_id
 

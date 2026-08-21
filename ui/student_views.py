@@ -212,15 +212,21 @@ class StudentProfileDialog(QDialog):
         info_h.addWidget(lbl_status)
         sum_layout.addLayout(info_h)
 
-        # 1. Pending Debts Table & Private Class Debt Creation
+        # 1. Pending Debts Table & Debt Creation (Private Class & Inventory Goods)
         h_debt_top = QHBoxLayout()
         lbl_debts = QLabel("۱. لیست بدهی‌های معوق و تسویه‌نشده دانش‌آموز (مستقل از پرداختی‌ها):")
         lbl_debts.setStyleSheet("font-weight: bold; color: #C0392B; margin-top: 5px;")
+
+        btn_add_inv_goods = QPushButton("ثبت بدهی کتاب/کالا از انبار +")
+        btn_add_inv_goods.setProperty("accent", "true")
+        btn_add_inv_goods.clicked.connect(self.add_inventory_item_charge)
+
         btn_add_private_class = QPushButton("ثبت کلاس خصوصی / بدهی سفارشی +")
-        btn_add_private_class.setProperty("accent", "true")
         btn_add_private_class.clicked.connect(self.add_private_class_charge)
+
         h_debt_top.addWidget(lbl_debts)
         h_debt_top.addStretch()
+        h_debt_top.addWidget(btn_add_inv_goods)
         h_debt_top.addWidget(btn_add_private_class)
         sum_layout.addLayout(h_debt_top)
 
@@ -344,6 +350,108 @@ class StudentProfileDialog(QDialog):
             self.tbl_paid.setItem(r, 2, QTableWidgetItem(method_map.get(p["method"], p["method"])))
             self.tbl_paid.setItem(r, 3, QTableWidgetItem(format_currency(p["amount"])))
             self.tbl_paid.setItem(r, 4, QTableWidgetItem(p.get("bank_reference_number") or p.get("unique_code") or "-"))
+
+    def add_inventory_item_charge(self):
+        b_repo = BookRepository(self.db_path)
+        all_books = b_repo.list_books()
+        if not all_books:
+            QMessageBox.warning(self, "اطلاع", "هیچ کالایی در انبار یافت نشد.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("ثبت بدهی کتاب / کالا از انبار برای دانش‌آموز")
+        dlg.resize(550, 400)
+        v_box = QVBoxLayout(dlg)
+
+        top_srch_h = QHBoxLayout()
+        txt_srch = QLineEdit()
+        txt_srch.setPlaceholderText("جستجو در کالاها و کتاب‌های انبار...")
+        top_srch_h.addWidget(QLabel("جستجو:"))
+        top_srch_h.addWidget(txt_srch)
+        v_box.addLayout(top_srch_h)
+
+        tbl_inv = QTableWidget()
+        tbl_inv.setColumnCount(4)
+        tbl_inv.setHorizontalHeaderLabels(["عنوان کالا / کتاب", "قیمت (تومان)", "موجودی انبار", "انتخاب"])
+        tbl_inv.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        v_box.addWidget(tbl_inv)
+
+        selected_bids = set()
+
+        def load_inv(q=""):
+            current_books = b_repo.list_books()
+            filtered = [b for b in current_books if q.strip() in b["title"]] if q.strip() else current_books
+            tbl_inv.setRowCount(len(filtered))
+
+            for r, bk in enumerate(filtered):
+                bid = bk["id"]
+                tbl_inv.setItem(r, 0, QTableWidgetItem(bk["title"]))
+                tbl_inv.setItem(r, 1, QTableWidgetItem(format_currency(bk["sale_price"])))
+                tbl_inv.setItem(r, 2, QTableWidgetItem(to_persian_digits(bk["stock_quantity"])))
+
+                chk = QCheckBox("انتخاب")
+                if bid in selected_bids:
+                    chk.setChecked(True)
+
+                def make_toggle(book_id):
+                    return lambda state: selected_bids.add(book_id) if state else selected_bids.discard(book_id)
+
+                chk.toggled.connect(make_toggle(bid))
+
+                chk_w = QWidget()
+                c_lay = QHBoxLayout(chk_w)
+                c_lay.addWidget(chk)
+                c_lay.setAlignment(Qt.AlignCenter)
+                c_lay.setContentsMargins(0, 0, 0, 0)
+                tbl_inv.setCellWidget(r, 3, chk_w)
+
+        txt_srch.textChanged.connect(load_inv)
+        load_inv()
+
+        btn_confirm = QPushButton("ثبت بدهی کالاهای انتخابی")
+        btn_confirm.setProperty("accent", "true")
+        v_box.addWidget(btn_confirm)
+
+        def save():
+            if not selected_bids:
+                QMessageBox.warning(dlg, "خطا", "لطفاً حداقل یک کالا را انتخاب کنید.")
+                return
+
+            all_books_map = {b["id"]: b for b in b_repo.list_books()}
+            chosen_items = [all_books_map[bid] for bid in selected_bids if bid in all_books_map]
+
+            out_of_stock = [bk for bk in chosen_items if bk["stock_quantity"] <= 0]
+            if out_of_stock:
+                titles = " - ".join(bk["title"] for bk in out_of_stock)
+                if QMessageBox.question(dlg, "هشدار اتمام موجودی", f"موجودی آیتم‌های زیر صفر یا منفی است:\n{titles}\n\nآیا مایلید بدهی ثبت شده و موجودی انبار منفی گردد؟") != QMessageBox.Yes:
+                    return
+
+            cfg_repo = ConfigRepository(self.db_path)
+            ptypes = cfg_repo.list_payment_types()
+            book_pt_id = 1
+            for pt in ptypes:
+                if "کتاب" in pt["name"]:
+                    book_pt_id = pt["id"]
+                    break
+
+            for bk in chosen_items:
+                b_repo.reduce_stock(bk["id"], 1)
+                self.payment_repo.record_payment(
+                    student_id=self.student_id,
+                    payment_type_id=book_pt_id,
+                    amount=bk["sale_price"],
+                    method="cash",
+                    description=f"کالا / کتاب انبار: {bk['title']}",
+                    status="pending",
+                    create_invoice=False
+                )
+
+            QMessageBox.information(dlg, "موفقیت", "بدهی کالاهای انتخابی با موفقیت ثبت گردید و موجودی انبار کسر شد.")
+            dlg.accept()
+            self.load_financial_ledgers()
+
+        btn_confirm.clicked.connect(save)
+        dlg.exec()
 
     def add_private_class_charge(self):
         dlg = QDialog(self)
@@ -882,10 +990,20 @@ class TermClassManagementWidget(QWidget):
             cap_str = f"{c['enrolled_count']} / {c['capacity']}"
             self.tbl_classes.setItem(r, 6, QTableWidgetItem(to_persian_digits(cap_str)))
 
-            btn_roster = QPushButton("لیست کلاس / انتقال")
+            btn_panel = QWidget()
+            btn_lay = QHBoxLayout(btn_panel)
+            btn_lay.setContentsMargins(2, 2, 2, 2)
+
+            btn_edit_cls = QPushButton("ویرایش")
+            btn_roster = QPushButton("لیست کلاس")
             c_id = c["id"]
+            btn_edit_cls.clicked.connect(lambda _, id=c_id: self.edit_class_dialog(id))
             btn_roster.clicked.connect(lambda _, id=c_id: self.open_roster(id))
-            self.tbl_classes.setCellWidget(r, 7, btn_roster)
+
+            btn_lay.addWidget(btn_edit_cls)
+            btn_lay.addWidget(btn_roster)
+
+            self.tbl_classes.setCellWidget(r, 7, btn_panel)
 
     def add_term(self):
         dlg = QDialog(self)
@@ -906,6 +1024,144 @@ class TermClassManagementWidget(QWidget):
                 self.term_repo.create_term(txt_name.text().strip(), start_date=s_date)
                 dlg.accept()
                 self.load_terms()
+
+        btn.clicked.connect(save)
+        dlg.exec()
+
+    def edit_class_dialog(self, class_id: int):
+        cls = self.class_repo.get_by_id(class_id)
+        if not cls:
+            return
+
+        terms = self.term_repo.list_terms()
+        if not terms:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"ویرایش کلاس: {cls['name']} ({cls['code']})")
+        dlg.setWindowState(dlg.windowState() | Qt.WindowMaximized)
+        layout = QVBoxLayout(dlg)
+
+        form = QFormLayout()
+        txt_code = QLineEdit(cls["code"])
+        txt_name = QLineEdit(cls["name"])
+        txt_teacher = QLineEdit(cls.get("teacher_name") or "")
+
+        cmb_term = QComboBox()
+        for t in terms:
+            cmb_term.addItem(t["name"], t["id"])
+        idx_t = cmb_term.findData(cls["term_id"])
+        if idx_t >= 0:
+            cmb_term.setCurrentIndex(idx_t)
+
+        spn_tuition = QDoubleSpinBox()
+        spn_tuition.setRange(0, 100000000)
+        spn_tuition.setValue(cls.get("tuition_fee", 0))
+        spn_tuition.setSingleStep(50000)
+        spn_tuition.setDecimals(0)
+
+        txt_cap = QLineEdit(str(cls.get("capacity", 30)))
+
+        form.addRow("کد کلاس:", txt_code)
+        form.addRow("نام کلاس:", txt_name)
+        form.addRow("استاد:", txt_teacher)
+        form.addRow("ترم مربوطه:", cmb_term)
+        form.addRow("مبلغ شهریه ثابت (تومان):", spn_tuition)
+        form.addRow("ظرفیت:", txt_cap)
+        layout.addLayout(form)
+
+        # Multi-book selection table with search filter
+        b_hdr_lay = QHBoxLayout()
+        lbl_b = QLabel("مدیریت کتاب‌های اختصاص‌یافته از انبار به این کلاس:")
+        lbl_b.setStyleSheet("font-weight: bold; margin-top: 5px;")
+
+        txt_book_srch = QLineEdit()
+        txt_book_srch.setPlaceholderText("جستجو در کتاب‌ها و وسایل انبار...")
+
+        b_hdr_lay.addWidget(lbl_b, 2)
+        b_hdr_lay.addWidget(txt_book_srch, 2)
+        layout.addLayout(b_hdr_lay)
+
+        tbl_books_sel = QTableWidget()
+        tbl_books_sel.setColumnCount(3)
+        tbl_books_sel.setHorizontalHeaderLabels(["عنوان کتاب", "قیمت فروش (تومان)", "موجود در کلاس"])
+        tbl_books_sel.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        b_repo = BookRepository(self.db_path)
+        existing_class_books = self.class_repo.get_class_books(class_id)
+        selected_class_book_ids = {b["id"] for b in existing_class_books}
+
+        def load_class_books_tbl(q=""):
+            tbl_books_sel.setRowCount(0)
+            current_bks = b_repo.list_books()
+            filtered_bks = [bk for bk in current_bks if q.strip() in bk["title"]] if q.strip() else current_bks
+            tbl_books_sel.setRowCount(len(filtered_bks))
+
+            for r, bk in enumerate(filtered_bks):
+                tbl_books_sel.setItem(r, 0, QTableWidgetItem(bk["title"]))
+                tbl_books_sel.setItem(r, 1, QTableWidgetItem(format_currency(bk["sale_price"])))
+
+                bid = bk["id"]
+                chk = QCheckBox("افزودن")
+                if bid in selected_class_book_ids:
+                    chk.setChecked(True)
+
+                def make_class_book_handler(book_id):
+                    return lambda state: selected_class_book_ids.add(book_id) if state else selected_class_book_ids.discard(book_id)
+
+                chk.toggled.connect(make_class_book_handler(bid))
+
+                chk_widget = QWidget()
+                chk_lay = QHBoxLayout(chk_widget)
+                chk_lay.addWidget(chk)
+                chk_lay.setAlignment(Qt.AlignCenter)
+                chk_lay.setContentsMargins(0, 0, 0, 0)
+                tbl_books_sel.setCellWidget(r, 2, chk_widget)
+
+        txt_book_srch.textChanged.connect(load_class_books_tbl)
+        load_class_books_tbl()
+
+        layout.addWidget(tbl_books_sel)
+
+        form_other = QFormLayout()
+        spn_other = QDoubleSpinBox()
+        spn_other.setRange(0, 50000000)
+        spn_other.setValue(cls.get("other_fee", 0))
+        spn_other.setDecimals(0)
+        txt_other_title = QLineEdit(cls.get("other_fee_title") or "هزینه جانبی")
+
+        form_other.addRow("عنوان سایر هزینه‌ها:", txt_other_title)
+        form_other.addRow("مبلغ سایر هزینه‌ها (تومان):", spn_other)
+        layout.addLayout(form_other)
+
+        btn = QPushButton("ذخیره تغییرات کلاس")
+        btn.setProperty("accent", "true")
+        layout.addWidget(btn)
+
+        def save():
+            code = txt_code.text().strip()
+            name = txt_name.text().strip()
+            if code and name:
+                try:
+                    cap = int(to_latin_digits(txt_cap.text()))
+                except ValueError:
+                    cap = 30
+
+                all_books_map = {b["id"]: b for b in b_repo.list_books()}
+                selected_books = [all_books_map[bid] for bid in selected_class_book_ids if bid in all_books_map]
+                total_book_fee = sum(bk["sale_price"] for bk in selected_books)
+
+                self.class_repo.update_class(
+                    class_id=class_id, code=code, name=name,
+                    teacher_name=txt_teacher.text().strip(),
+                    capacity=cap, start_date=cls.get("start_date", ""),
+                    status=cls.get("status", "active"),
+                    tuition_fee=spn_tuition.value(), book_fee=total_book_fee,
+                    other_fee=spn_other.value(), other_fee_title=txt_other_title.text().strip(),
+                    book_ids=list(selected_class_book_ids)
+                )
+                dlg.accept()
+                self.load_classes()
 
         btn.clicked.connect(save)
         dlg.exec()
@@ -1091,119 +1347,96 @@ class TermClassManagementWidget(QWidget):
                     QMessageBox.warning(dlg, "تکمیل ظرفیت", "ظرفیت کلاس تکمیل شده است!")
                     return
 
-                # Extra Inventory Item Sale Dialog (excluding books assigned to this class)
+                # Display enrollment inventory dialog with class-assigned books pre-checked and clearly labeled
                 b_repo = BookRepository(self.db_path)
-                all_inventory = b_repo.list_books()
+                class_assigned_books = self.class_repo.get_class_books(class_id)
+                class_assigned_book_ids = {cb["id"] for cb in class_assigned_books}
 
-                class_book_fee = cls.get("book_fee", 0.0)
-                available_extra_items = [
-                    b for b in all_inventory
-                    if not (class_book_fee > 0 and b["sale_price"] > 0 and b["sale_price"] == class_book_fee)
-                ]
+                opt_dlg = QDialog(dlg)
+                opt_dlg.setWindowTitle(f"انتخاب کتاب‌ها و وسایل انبار برای ثبت‌نام {st['first_name']} {st['last_name']}")
+                opt_dlg.resize(620, 480)
+                v_opt = QVBoxLayout(opt_dlg)
 
-                if available_extra_items:
-                    opt_dlg = QDialog(dlg)
-                    opt_dlg.setWindowTitle("فروش وسایل / کتاب‌های تکمیلی انبار به دانش‌آموز")
-                    opt_dlg.resize(550, 420)
-                    v_opt = QVBoxLayout(opt_dlg)
+                top_srch_h = QHBoxLayout()
+                txt_srch = QLineEdit()
+                txt_srch.setPlaceholderText("جستجو در وسایل و کتاب‌های انبار...")
 
-                    top_srch_h = QHBoxLayout()
-                    txt_srch = QLineEdit()
-                    txt_srch.setPlaceholderText("جستجو در وسایل و کتاب‌های انبار...")
+                btn_ref_inv = QPushButton("بروزرسانی انبار")
+                top_srch_h.addWidget(txt_srch, 3)
+                top_srch_h.addWidget(btn_ref_inv, 1)
+                v_opt.addLayout(top_srch_h)
 
-                    btn_ref_inv = QPushButton("بروزرسانی انبار")
-                    top_srch_h.addWidget(txt_srch, 3)
-                    top_srch_h.addWidget(btn_ref_inv, 1)
-                    v_opt.addLayout(top_srch_h)
+                tbl_inv = QTableWidget()
+                tbl_inv.setColumnCount(5)
+                tbl_inv.setHorizontalHeaderLabels(["عنوان وسیله / کتاب", "نوع اختصاص", "قیمت (تومان)", "موجودی انبار", "تحویل به دانش‌آموز"])
+                tbl_inv.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+                v_opt.addWidget(tbl_inv)
 
-                    tbl_inv = QTableWidget()
-                    tbl_inv.setColumnCount(4)
-                    tbl_inv.setHorizontalHeaderLabels(["عنوان وسیله / کتاب", "قیمت (تومان)", "موجودی", "انتخاب"])
-                    tbl_inv.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-                    v_opt.addWidget(tbl_inv)
+                # Pre-check all class-assigned books
+                selected_book_ids = set(class_assigned_book_ids)
 
-                    selected_book_ids = set()
+                def load_inv_tbl(q=""):
+                    current_books = b_repo.list_books()
+                    filtered = [b for b in current_books if q.strip() in b["title"]] if q.strip() else current_books
+                    tbl_inv.setRowCount(len(filtered))
 
-                    def load_inv_tbl(q=""):
-                        current_books = b_repo.list_books()
-                        filtered = [b for b in current_books if q.strip() in b["title"]] if q.strip() else current_books
-                        tbl_inv.setRowCount(len(filtered))
-                        for r, bk in enumerate(filtered):
-                            tbl_inv.setItem(r, 0, QTableWidgetItem(bk["title"]))
-                            tbl_inv.setItem(r, 1, QTableWidgetItem(format_currency(bk["sale_price"])))
-                            tbl_inv.setItem(r, 2, QTableWidgetItem(to_persian_digits(bk["stock_quantity"])))
+                    for r, bk in enumerate(filtered):
+                        bid = bk["id"]
+                        tbl_inv.setItem(r, 0, QTableWidgetItem(bk["title"]))
 
-                            chk = QCheckBox("افزودن")
-                            bid = bk["id"]
-                            if bid in selected_book_ids:
-                                chk.setChecked(True)
+                        is_class_book = bid in class_assigned_book_ids
+                        tag_text = "اختصاص‌یافته به کلاس" if is_class_book else "سایر موارد انبار"
+                        tag_item = QTableWidgetItem(tag_text)
+                        if is_class_book:
+                            tag_item.setForeground(Qt.blue)
+                        tbl_inv.setItem(r, 1, tag_item)
 
-                            def make_toggle_handler(book_id):
-                                return lambda state: selected_book_ids.add(book_id) if state else selected_book_ids.discard(book_id)
+                        tbl_inv.setItem(r, 2, QTableWidgetItem(format_currency(bk["sale_price"])))
+                        tbl_inv.setItem(r, 3, QTableWidgetItem(to_persian_digits(bk["stock_quantity"])))
 
-                            chk.toggled.connect(make_toggle_handler(bid))
+                        chk = QCheckBox("تحویل دادن")
+                        if bid in selected_book_ids:
+                            chk.setChecked(True)
 
-                            chk_w = QWidget()
-                            c_lay = QHBoxLayout(chk_w)
-                            c_lay.addWidget(chk)
-                            c_lay.setAlignment(Qt.AlignCenter)
-                            c_lay.setContentsMargins(0, 0, 0, 0)
-                            tbl_inv.setCellWidget(r, 3, chk_w)
+                        def make_toggle_handler(book_id):
+                            return lambda state: selected_book_ids.add(book_id) if state else selected_book_ids.discard(book_id)
 
-                    txt_srch.textChanged.connect(load_inv_tbl)
-                    btn_ref_inv.clicked.connect(lambda: load_inv_tbl(txt_srch.text()))
-                    load_inv_tbl()
+                        chk.toggled.connect(make_toggle_handler(bid))
 
-                    btn_confirm = QPushButton("تأیید ثبت‌نام و افزودن وسایل انتخابی")
-                    btn_confirm.setProperty("accent", "true")
-                    v_opt.addWidget(btn_confirm)
+                        chk_w = QWidget()
+                        c_lay = QHBoxLayout(chk_w)
+                        c_lay.addWidget(chk)
+                        c_lay.setAlignment(Qt.AlignCenter)
+                        c_lay.setContentsMargins(0, 0, 0, 0)
+                        tbl_inv.setCellWidget(r, 4, chk_w)
 
-                    def confirm_enroll_and_extra():
-                        all_books_map = {b["id"]: b for b in b_repo.list_books()}
-                        chosen_items = [all_books_map[bid] for bid in selected_book_ids if bid in all_books_map]
+                txt_srch.textChanged.connect(load_inv_tbl)
+                btn_ref_inv.clicked.connect(lambda: load_inv_tbl(txt_srch.text()))
+                load_inv_tbl()
 
-                        # Check out-of-stock items and prompt confirmation
-                        out_of_stock = [bk for bk in chosen_items if bk["stock_quantity"] <= 0]
-                        if out_of_stock:
-                            titles = " - ".join(bk["title"] for bk in out_of_stock)
-                            if QMessageBox.question(opt_dlg, "هشدار اتمام موجودی انبار", f"موجودی آیتم‌های زیر در انبار صفر یا منفی است:\n{titles}\n\nآیا مایلید دانش‌آموز ثبت‌نام شده و موجودی انبار منفی گردد؟") != QMessageBox.Yes:
-                                return
+                btn_confirm = QPushButton("تأیید و نهایی‌سازی ثبت‌نام دانش‌آموز")
+                btn_confirm.setProperty("accent", "true")
+                v_opt.addWidget(btn_confirm)
 
-                        # Perform Enrollment
-                        self.class_repo.add_enrollment(class_id, st["id"])
+                def confirm_enroll_and_extra():
+                    all_books_map = {b["id"]: b for b in b_repo.list_books()}
+                    chosen_items = [all_books_map[bid] for bid in selected_book_ids if bid in all_books_map]
 
-                        # Add extra item debts and reduce stock if items selected
-                        if chosen_items:
-                            p_repo = PaymentRepository(self.db_path)
-                            cfg_repo = ConfigRepository(self.db_path)
-                            ptypes = cfg_repo.list_payment_types()
-                            book_pt_id = 1
-                            for pt in ptypes:
-                                if "کتاب" in pt["name"]:
-                                    book_pt_id = pt["id"]
-                                    break
+                    # Check out-of-stock items and prompt confirmation
+                    out_of_stock = [bk for bk in chosen_items if bk["stock_quantity"] <= 0]
+                    if out_of_stock:
+                        titles = " - ".join(bk["title"] for bk in out_of_stock)
+                        if QMessageBox.question(opt_dlg, "هشدار اتمام موجودی انبار", f"موجودی آیتم‌های زیر در انبار صفر یا منفی است:\n{titles}\n\nآیا مایلید دانش‌آموز ثبت‌نام شده و موجودی انبار منفی گردد؟") != QMessageBox.Yes:
+                            return
 
-                            for bk in chosen_items:
-                                b_repo.reduce_stock(bk["id"], 1)
-                                p_repo.record_payment(
-                                    student_id=st["id"],
-                                    payment_type_id=book_pt_id,
-                                    amount=bk["sale_price"],
-                                    method="cash",
-                                    term_id=cls["term_id"],
-                                    description=f"کتاب / وسیله انبار: {bk['title']}",
-                                    status="pending",
-                                    create_invoice=False
-                                )
+                    # Perform Enrollment passing selected_book_ids
+                    self.class_repo.add_enrollment(class_id, st["id"], selected_book_ids=list(selected_book_ids))
 
-                        QMessageBox.information(opt_dlg, "موفقیت", "دانش‌آموز با موفقیت در کلاس ثبت‌نام گردید.")
-                        opt_dlg.accept()
+                    QMessageBox.information(opt_dlg, "موفقیت", "دانش‌آموز با موفقیت در کلاس ثبت‌نام گردید و کالا/کتاب‌های انتخابی کسر شد.")
+                    opt_dlg.accept()
 
-                    btn_confirm.clicked.connect(confirm_enroll_and_extra)
-                    opt_dlg.exec()
-                else:
-                    self.class_repo.add_enrollment(class_id, st["id"])
-                    QMessageBox.information(dlg, "موفقیت", "دانش‌آموز با موفقیت در کلاس ثبت‌نام گردید.")
+                btn_confirm.clicked.connect(confirm_enroll_and_extra)
+                opt_dlg.exec()
 
                 refresh_roster()
                 self.load_classes()
