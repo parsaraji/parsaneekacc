@@ -12,9 +12,10 @@ from database.repositories import PaymentRepository, StudentRepository, TermRepo
 from business_logic.formatters import to_persian_digits, to_latin_digits, gregorian_to_shamsi, format_currency, get_current_shamsi_date
 from business_logic.financial import FinancialEngine
 from reports.invoice_renderer import InvoiceTemplateRenderer
+from ui.student_views import StudentPickerDialog
 
 class RecordPaymentDialog(QDialog):
-    """Dialog for recording single or multi-category payments, debt charges, or installment plans against a student."""
+    """Dialog for recording single or multi-category payments, debt charges, or installment plans against a student with dedicated search picker."""
     def __init__(self, db_path=None, student_id=None, parent=None):
         super().__init__(parent)
         self.db_path = db_path
@@ -25,27 +26,33 @@ class RecordPaymentDialog(QDialog):
         self.config_repo = ConfigRepository(db_path)
         self.financial_engine = FinancialEngine(db_path)
 
-        self.line_items = []  # List of dicts for multi-item payment
+        self.line_items = []
 
         self.setWindowTitle("ثبت تراکنش پرداخت، بدهی جدید یا اقساط")
-        self.resize(600, 620)
+        self.resize(620, 640)
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        # Student Selection
+        # Student Selection with Search Picker Button
+        st_box = QHBoxLayout()
         self.cmb_student = QComboBox()
-        students = self.student_repo.search_students(limit=500)
-        for s in students:
-            self.cmb_student.addItem(f"{s['first_name']} {s['last_name']} ({s['unique_code']})", s['id'])
+        self.reload_students()
+
+        btn_search_st = QPushButton("جستجوی پیشرفته دانش‌آموز...")
+        btn_search_st.clicked.connect(self.open_student_picker)
+
+        st_box.addWidget(self.cmb_student, 3)
+        st_box.addWidget(btn_search_st, 1)
 
         if self.student_id:
             idx = self.cmb_student.findData(self.student_id)
             if idx >= 0:
                 self.cmb_student.setCurrentIndex(idx)
                 self.cmb_student.setEnabled(False)
+            btn_search_st.setEnabled(False)
 
         # Term
         self.cmb_term = QComboBox()
@@ -53,11 +60,11 @@ class RecordPaymentDialog(QDialog):
         for t in terms:
             self.cmb_term.addItem(t["name"], t["id"])
 
-        form.addRow("دانش‌آموز:", self.cmb_student)
+        form.addRow("دانش‌آموز:", st_box)
         form.addRow("ترم:", self.cmb_term)
 
         # Multi-item Charges Group
-        box_items = QGroupBox("آیتم‌های دریافتی / بدهی (امکان افزودن چندین بابت مانند شهریه + کتاب در یک کارت کشیدن)")
+        box_items = QGroupBox("آیتم‌های دریافتی / بدهی (شامل شهریه، کتاب، کلاس خصوصی، ثبت‌نام و...)")
         v_items = QVBoxLayout(box_items)
 
         self.tbl_items = QTableWidget()
@@ -144,6 +151,20 @@ class RecordPaymentDialog(QDialog):
         layout.addLayout(btn_box)
 
         self.on_method_changed()
+
+    def reload_students(self):
+        self.cmb_student.clear()
+        students = self.student_repo.search_students(limit=500)
+        for s in students:
+            self.cmb_student.addItem(f"{s['first_name']} {s['last_name']} ({s['unique_code']})", s['id'])
+
+    def open_student_picker(self):
+        picker = StudentPickerDialog(db_path=self.db_path, parent=self)
+        if picker.exec() == QDialog.Accepted and picker.selected_student:
+            st = picker.selected_student
+            idx = self.cmb_student.findData(st["id"])
+            if idx >= 0:
+                self.cmb_student.setCurrentIndex(idx)
 
     def add_line_item(self):
         amt = self.spn_item_amount.value()

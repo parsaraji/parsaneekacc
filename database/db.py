@@ -73,6 +73,10 @@ def init_db(db_path: Optional[str] = None) -> None:
         term_id INTEGER NOT NULL,
         start_date TEXT,
         capacity INTEGER NOT NULL DEFAULT 30,
+        tuition_fee REAL NOT NULL DEFAULT 0,
+        book_fee REAL NOT NULL DEFAULT 0,
+        other_fee REAL NOT NULL DEFAULT 0,
+        other_fee_title TEXT DEFAULT 'هزینه جانبی',
         status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'closed')),
         FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE RESTRICT
     );
@@ -200,7 +204,6 @@ def init_db(db_path: Optional[str] = None) -> None:
         value TEXT NOT NULL
     );
 
-    -- Create Indexes for fast querying
     CREATE INDEX IF NOT EXISTS idx_students_name ON students(first_name, last_name);
     CREATE INDEX IF NOT EXISTS idx_students_code ON students(unique_code);
     CREATE INDEX IF NOT EXISTS idx_students_status ON students(status);
@@ -217,13 +220,12 @@ def init_db(db_path: Optional[str] = None) -> None:
     CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
     """)
 
-    # Populate default payment types if empty
-    cursor.execute("SELECT COUNT(*) FROM payment_types")
-    if cursor.fetchone()[0] == 0:
-        cursor.executemany(
-            "INSERT INTO payment_types (name, is_system_default) VALUES (?, ?)",
-            [("شهریه", 1), ("کتاب", 1), ("هزینه‌های جانبی", 1)]
-        )
+    # Populate or sync default payment types
+    default_types = ["شهریه", "کتاب", "هزینه‌های جانبی", "ثبت‌نام اولیه", "کلاس خصوصی"]
+    for dt in default_types:
+        cursor.execute("SELECT id FROM payment_types WHERE name = ?", (dt,))
+        if not cursor.fetchone():
+            cursor.execute("INSERT INTO payment_types (name, is_system_default) VALUES (?, 1)", (dt,))
 
     # Populate default settings if empty
     cursor.execute("SELECT COUNT(*) FROM settings")
@@ -231,9 +233,9 @@ def init_db(db_path: Optional[str] = None) -> None:
         cursor.executemany(
             "INSERT INTO settings (key, value) VALUES (?, ?)",
             [
-                ("numeral_format", "persian"),  # 'persian' or 'latin'
-                ("currency_unit", "toman"),    # 'toman' or 'rial'
-                ("invoice_page_size", "A4"),   # 'A4' or 'A5'
+                ("numeral_format", "persian"),
+                ("currency_unit", "toman"),
+                ("invoice_page_size", "A4"),
                 ("auto_backup_on_close", "true"),
                 ("backup_keep_count", "10")
             ]

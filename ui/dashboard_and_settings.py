@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from database.repositories import (
-    StudentRepository, PaymentRepository, ExpenseRepository, ConfigRepository, UserRepository, AuditRepository
+    StudentRepository, PaymentRepository, ExpenseRepository, ConfigRepository, UserRepository, AuditRepository, TermRepository
 )
 from business_logic.financial import FinancialEngine
 from business_logic.formatters import to_persian_digits, to_latin_digits, gregorian_to_shamsi, format_currency
@@ -145,8 +145,8 @@ class ExpensesWidget(QWidget):
             "salary": "حقوق",
             "printing": "چاپ",
             "supplies": "ملزومات",
-            "insurance": "بیمه حوادث/تکمیلی",
-            "withdrawal": "برداشت مدیر/صندوق",
+            "insurance": "بیمه دانش‌آموزی / تکمیلی",
+            "withdrawal": "برداشت مدیر / برداشت از صندوق",
             "other": "سایر"
         }
 
@@ -197,38 +197,101 @@ class ExpensesWidget(QWidget):
 
 
 class ReportsWidget(QWidget):
-    """View for financial reports and Excel exports."""
+    """View for financial reports, Profit & Loss statement, Term Debtors, and Excel exports."""
     def __init__(self, db_path=None, parent=None):
         super().__init__(parent)
         self.db_path = db_path
         self.payment_repo = PaymentRepository(db_path)
         self.student_repo = StudentRepository(db_path)
         self.config_repo = ConfigRepository(db_path)
+        self.term_repo = TermRepository(db_path)
+        self.expense_repo = ExpenseRepository(db_path)
+        self.financial_engine = FinancialEngine(db_path)
         self.init_ui()
 
     def init_ui(self):
         layout = QVBoxLayout(self)
 
+        tabs = QTabWidget()
+
+        # Tab 1: General Transactions & Excel Export
+        tab_tx = QWidget()
+        v_tx = QVBoxLayout(tab_tx)
+
         top_bar = QHBoxLayout()
-        self.btn_export_payments = QPushButton("خروجی اکسل تراکنش‌ها")
+        self.btn_export_payments = QPushButton("خروجی اکسل کلیه تراکنش‌ها")
         self.btn_export_payments.clicked.connect(self.export_payments_excel)
 
-        self.btn_export_students = QPushButton("خروجی اکسل دانش‌آموزان")
+        self.btn_export_students = QPushButton("خروجی اکسل لیست دانش‌آموزان")
         self.btn_export_students.clicked.connect(self.export_students_excel)
 
         top_bar.addWidget(self.btn_export_payments)
         top_bar.addWidget(self.btn_export_students)
         top_bar.addStretch()
-
-        layout.addLayout(top_bar)
+        v_tx.addLayout(top_bar)
 
         self.table = QTableWidget()
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(["کد فاکتور", "دانش‌آموز", "بابت", "مبلغ", "تاریخ", "وضعیت"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        layout.addWidget(self.table)
+        v_tx.addWidget(self.table)
 
+        tabs.addTab(tab_tx, "گزارش تراکنش‌ها و خروجی عمومی")
+
+        # Tab 2: Profit & Loss Statement (صورت حساب سود و زیان)
+        tab_pnl = QWidget()
+        v_pnl = QVBoxLayout(tab_pnl)
+
+        pnl_hdr = QLabel("صورت حساب سود و زیان آموزشگاه (درآمدها − هزینه‌ها و برداشت‌ها = سود خالص)")
+        pnl_hdr.setStyleSheet("font-size: 14px; font-weight: bold; color: #2980B9; margin-bottom: 10px;")
+        v_pnl.addWidget(pnl_hdr)
+
+        self.tbl_pnl = QTableWidget()
+        self.tbl_pnl.setColumnCount(2)
+        self.tbl_pnl.setHorizontalHeaderLabels(["عنوان آیتم مالی", "مبلغ (تومان)"])
+        self.tbl_pnl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        v_pnl.addWidget(self.tbl_pnl)
+
+        btn_exp_pnl = QPushButton("خروجی اکسل صورت حساب سود و زیان")
+        btn_exp_pnl.setProperty("accent", "true")
+        btn_exp_pnl.clicked.connect(self.export_pnl_excel)
+        v_pnl.addWidget(btn_exp_pnl, alignment=Qt.AlignRight)
+
+        tabs.addTab(tab_pnl, "صورت حساب سود و زیان")
+
+        # Tab 3: Term Debtors Report (لیست بدهکاران ترم)
+        tab_deb = QWidget()
+        v_deb = QVBoxLayout(tab_deb)
+
+        deb_top = QHBoxLayout()
+        self.cmb_terms = QComboBox()
+        terms = self.term_repo.list_terms()
+        for t in terms:
+            self.cmb_terms.addItem(t["name"], t["id"])
+        self.cmb_terms.currentIndexChanged.connect(self.load_term_debtors)
+
+        btn_exp_deb = QPushButton("خروجی اکسل بدهکاران ترم")
+        btn_exp_deb.setProperty("accent", "true")
+        btn_exp_deb.clicked.connect(self.export_term_debtors_excel)
+
+        deb_top.addWidget(QLabel("انتخاب ترم:"))
+        deb_top.addWidget(self.cmb_terms, 2)
+        deb_top.addWidget(btn_exp_deb)
+        deb_top.addStretch()
+        v_deb.addLayout(deb_top)
+
+        self.tbl_debtors = QTableWidget()
+        self.tbl_debtors.setColumnCount(6)
+        self.tbl_debtors.setHorizontalHeaderLabels(["کد", "نام دانش‌آموز", "نام پدر", "شماره تماس", "بابت / شرح بدهی", "مبلغ بدهی"])
+        self.tbl_debtors.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        v_deb.addWidget(self.tbl_debtors)
+
+        tabs.addTab(tab_deb, "لیست بدهکاران ترم")
+
+        layout.addWidget(tabs)
         self.load_data()
+        self.load_pnl_statement()
+        self.load_term_debtors()
 
     def load_data(self):
         payments = self.payment_repo.list_payments(limit=500)
@@ -247,6 +310,82 @@ class ReportsWidget(QWidget):
             self.table.setItem(row, 3, QTableWidgetItem(format_currency(p["amount"], unit, use_p)))
             self.table.setItem(row, 4, QTableWidgetItem(gregorian_to_shamsi(p["paid_date"])))
             self.table.setItem(row, 5, QTableWidgetItem("پرداخت‌شده" if p["status"] == "paid" else "معوق"))
+
+    def load_pnl_statement(self):
+        fin = self.financial_engine.get_institute_financial_summary()
+        pnl_items = [
+            ("درآمد حاصل از دریافت نقد", fin["income_cash"]),
+            ("درآمد حاصل از دستگاه کارت‌خوان (POS)", fin["income_pos"]),
+            ("درآمد حاصل از واریز کارت به کارت", fin["income_card_to_card"]),
+            ("مجموع کل درآمدهای وصول‌شده", fin["total_income"]),
+            ("کل هزینه‌ها و برداشت‌های ثبت‌شده", fin["total_expenses"]),
+            ("سود / زیان خالص آموزشگاه", fin["net_income"]),
+            ("مجموع بدهی‌های معوق قابل وصول دانش‌آموزان", fin["total_outstanding_debt"])
+        ]
+
+        self.tbl_pnl.setRowCount(len(pnl_items))
+        for r, (title, amt) in enumerate(pnl_items):
+            self.tbl_pnl.setItem(r, 0, QTableWidgetItem(title))
+            item_val = QTableWidgetItem(format_currency(amt))
+            if "سود" in title:
+                item_val.setForeground(Qt.blue if amt >= 0 else Qt.red)
+            self.tbl_pnl.setItem(r, 1, item_val)
+
+    def load_term_debtors(self):
+        tid = self.cmb_terms.currentData()
+        if not tid:
+            return
+        debtors = self.payment_repo.get_term_debtors(tid)
+        self.tbl_debtors.setRowCount(len(debtors))
+        for r, d in enumerate(debtors):
+            self.tbl_debtors.setItem(r, 0, QTableWidgetItem(d["unique_code"]))
+            self.tbl_debtors.setItem(r, 1, QTableWidgetItem(f"{d['first_name']} {d['last_name']}"))
+            self.tbl_debtors.setItem(r, 2, QTableWidgetItem(d.get("father_name") or "-"))
+            self.tbl_debtors.setItem(r, 3, QTableWidgetItem(to_persian_digits(d.get("primary_phone") or "-")))
+            self.tbl_debtors.setItem(r, 4, QTableWidgetItem(d.get("description") or "شهریه معوق"))
+
+            amt_item = QTableWidgetItem(format_currency(d["amount"]))
+            amt_item.setForeground(Qt.red)
+            self.tbl_debtors.setItem(r, 5, amt_item)
+
+    def export_pnl_excel(self):
+        filePath, _ = QFileDialog.getSaveFileName(self, "ذخیره صورت حساب سود و زیان", "P_and_L_Statement.xlsx", "Excel Files (*.xlsx)")
+        if filePath:
+            fin = self.financial_engine.get_institute_financial_summary()
+            headers = ["عنوان شاخص مالی", "مبلغ (تومان)"]
+            rows = [
+                ["درآمد حاصل از دریافت نقد", fin["income_cash"]],
+                ["درآمد حاصل از دستگاه کارت‌خوان (POS)", fin["income_pos"]],
+                ["درآمد حاصل از واریز کارت به کارت", fin["income_card_to_card"]],
+                ["مجموع کل درآمدهای وصول‌شده", fin["total_income"]],
+                ["کل هزینه‌ها و برداشت‌های ثبت‌شده", fin["total_expenses"]],
+                ["سود / زیان خالص آموزشگاه", fin["net_income"]],
+                ["مجموع بدهی‌های معوق قابل وصول دانش‌آموزان", fin["total_outstanding_debt"]]
+            ]
+            ExcelExporter.export_table_to_excel(filePath, headers, rows, title="صورت حساب سود و زیان")
+            QMessageBox.information(self, "موفقیت", "فایل اکسل صورت حساب سود و زیان با موفقیت ذخیره گردید.")
+
+    def export_term_debtors_excel(self):
+        tid = self.cmb_terms.currentData()
+        tname = self.cmb_terms.currentText()
+        if not tid:
+            return
+        filePath, _ = QFileDialog.getSaveFileName(self, "ذخیره لیست بدهکاران ترم", f"Bedehkaran_{tname}.xlsx", "Excel Files (*.xlsx)")
+        if filePath:
+            debtors = self.payment_repo.get_term_debtors(tid)
+            headers = ["کد دانش‌آموزی", "نام و نام خانوادگی", "نام پدر", "شماره تماس", "بابت بدهی", "مبلغ بدهی (تومان)"]
+            rows = []
+            for d in debtors:
+                rows.append([
+                    d.get("unique_code", "-"),
+                    f"{d.get('first_name', '')} {d.get('last_name', '')}",
+                    d.get("father_name", "-"),
+                    d.get("primary_phone", "-"),
+                    d.get("description", "-"),
+                    d.get("amount", 0.0)
+                ])
+            ExcelExporter.export_table_to_excel(filePath, headers, rows, title=f"لیست بدهکاران: {tname}")
+            QMessageBox.information(self, "موفقیت", "فایل اکسل بدهکاران ترم با موفقیت ذخیره گردید.")
 
     def export_payments_excel(self):
         filePath, _ = QFileDialog.getSaveFileName(self, "ذخیره فایل اکسل", "", "Excel Files (*.xlsx)")

@@ -3,16 +3,18 @@ import shutil
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QTextEdit,
-    QDialog, QFormLayout, QMessageBox, QTabWidget, QFileDialog, QListWidget, QListWidgetItem
+    QDialog, QFormLayout, QMessageBox, QTabWidget, QFileDialog, QListWidget, QListWidgetItem,
+    QCheckBox, QDoubleSpinBox
 )
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from database.repositories import StudentRepository, TermRepository, ClassRepository, AuditRepository, AttachmentRepository
+from database.repositories import StudentRepository, TermRepository, ClassRepository, AuditRepository, AttachmentRepository, PaymentRepository, ConfigRepository
 from business_logic.formatters import to_persian_digits, to_latin_digits, gregorian_to_shamsi, format_currency
 from business_logic.financial import FinancialEngine
+from reports.excel_export import ExcelExporter
 
 class StudentDialog(QDialog):
-    """Dialog for creating or editing a student with direct class enrollment option."""
+    """Dialog for creating or editing a student with direct class enrollment and initial registration fee option."""
     def __init__(self, parent=None, db_path=None, student_id=None, user_id=None):
         super().__init__(parent)
         self.db_path = db_path
@@ -20,9 +22,11 @@ class StudentDialog(QDialog):
         self.user_id = user_id
         self.student_repo = StudentRepository(db_path)
         self.class_repo = ClassRepository(db_path)
+        self.payment_repo = PaymentRepository(db_path)
+        self.config_repo = ConfigRepository(db_path)
 
         self.setWindowTitle("ویرایش دانش‌آموز" if student_id else "افزودن دانش‌آموز جدید")
-        self.resize(480, 450)
+        self.resize(500, 500)
         self.init_ui()
         if student_id:
             self.load_student_data()
@@ -49,10 +53,19 @@ class StudentDialog(QDialog):
         self.cmb_class.addItem("-- بدون ثبت‌نام اولیه در کلاس --", None)
         active_classes = self.class_repo.list_classes(status="active")
         for c in active_classes:
-            self.cmb_class.addItem(f"{c['name']} ({c['code']}) - استاد: {c.get('teacher_name', '-')}", c['id'])
+            self.cmb_class.addItem(f"{c['name']} ({c['code']}) - شهریه: {format_currency(c['tuition_fee'])}", c['id'])
+
+        # Optional Initial Registration Fee
+        self.chk_reg_fee = QCheckBox("افزودن بدهی هزینه ثبت‌نام اولیه")
+        self.spn_reg_fee = QDoubleSpinBox()
+        self.spn_reg_fee.setRange(0, 100000000)
+        self.spn_reg_fee.setValue(100000)
+        self.spn_reg_fee.setSingleStep(10000)
+        self.spn_reg_fee.setEnabled(False)
+        self.chk_reg_fee.toggled.connect(lambda chk: self.spn_reg_fee.setEnabled(chk))
 
         self.txt_notes = QTextEdit()
-        self.txt_notes.setMaximumHeight(80)
+        self.txt_notes.setMaximumHeight(70)
 
         form.addRow("نام:", self.txt_first_name)
         form.addRow("نام خانوادگی:", self.txt_last_name)
@@ -62,12 +75,13 @@ class StudentDialog(QDialog):
         form.addRow("وضعیت:", self.cmb_status)
         if not self.student_id:
             form.addRow("ثبت‌نام مستقیم در کلاس:", self.cmb_class)
+            form.addRow(self.chk_reg_fee, self.spn_reg_fee)
         form.addRow("یادداشت خصوصی:", self.txt_notes)
 
         layout.addLayout(form)
 
         btn_box = QHBoxLayout()
-        self.btn_save = QPushButton("ذخیره")
+        self.btn_save = QPushButton("ذخیره دانش‌آموز")
         self.btn_save.setProperty("accent", "true")
         self.btn_save.clicked.connect(self.save)
 
@@ -122,11 +136,30 @@ class StudentDialog(QDialog):
             if chosen_cid:
                 self.class_repo.add_enrollment(chosen_cid, self.student_id)
 
+            # Registration fee if checked
+            if self.chk_reg_fee.isChecked() and self.spn_reg_fee.value() > 0:
+                # get payment type for reg fee
+                ptypes = self.config_repo.list_payment_types()
+                reg_pt_id = 1
+                for pt in ptypes:
+                    if "ثبت‌نام" in pt["name"]:
+                        reg_pt_id = pt["id"]
+                        break
+                self.payment_repo.record_payment(
+                    student_id=self.student_id,
+                    payment_type_id=reg_pt_id,
+                    amount=self.spn_reg_fee.value(),
+                    method="cash",
+                    description="هزینه ثبت‌نام اولیه دانش‌آموز",
+                    status="pending",
+                    create_invoice=False
+                )
+
         self.accept()
 
 
 class StudentProfileDialog(QDialog):
-    """Full Student Profile Dialog with Tabs (Details, Phones, Terms, Financial, Attachments, Audit Log)."""
+    """Full Student Profile Dialog with Financial Ledger & Export."""
     def __init__(self, student_id, db_path=None, parent=None):
         super().__init__(parent)
         self.student_id = student_id
@@ -134,11 +167,12 @@ class StudentProfileDialog(QDialog):
         self.student_repo = StudentRepository(db_path)
         self.term_repo = TermRepository(db_path)
         self.financial_engine = FinancialEngine(db_path)
+        self.payment_repo = PaymentRepository(db_path)
         self.audit_repo = AuditRepository(db_path)
         self.attachment_repo = AttachmentRepository(db_path)
 
-        self.setWindowTitle("شناسنامه کامل دانش‌آموز")
-        self.resize(720, 520)
+        self.setWindowTitle("شناسنامه کامل و تراز مالی دانش‌آموز")
+        self.resize(780, 560)
         self.init_ui()
 
     def init_ui(self):
@@ -154,23 +188,38 @@ class StudentProfileDialog(QDialog):
 
         tabs = QTabWidget()
 
-        # Tab 1: Financial & Basic Summary
+        # Tab 1: Full Financial Ledger
         tab_summary = QWidget()
         sum_layout = QVBoxLayout(tab_summary)
         fin = self.financial_engine.get_student_financial_summary(self.student_id)
 
-        sum_layout.addWidget(QLabel(f"کد دانش‌آموزی: {student['unique_code']}"))
-        sum_layout.addWidget(QLabel(f"نام پدر: {student.get('father_name', '-')}") )
-        sum_layout.addWidget(QLabel(f"آدرس: {student.get('address', '-')}") )
-        sum_layout.addWidget(QLabel(f"مجموع پرداختی: {format_currency(fin['total_paid'])}"))
+        info_h = QHBoxLayout()
+        info_h.addWidget(QLabel(f"کد: {student['unique_code']}"))
+        info_h.addWidget(QLabel(f"نام پدر: {student.get('father_name', '-')}"))
+        info_h.addWidget(QLabel(f"پرداختی کل: {format_currency(fin['total_paid'])}"))
 
-        lbl_debt = QLabel(f"بدهی معوق / مانده بدهی: {format_currency(fin['total_pending_debt'])}")
+        lbl_debt = QLabel(f"بدهی معوق: {format_currency(fin['total_pending_debt'])}")
         lbl_debt.setStyleSheet("color: #E74C3C; font-weight: bold; font-size: 13px;" if fin['total_pending_debt'] > 0 else "")
-        sum_layout.addWidget(lbl_debt)
+        info_h.addWidget(lbl_debt)
+        sum_layout.addLayout(info_h)
 
-        sum_layout.addWidget(QLabel(f"مجموع تخفیفات: {format_currency(fin['total_discount'])}"))
-        sum_layout.addStretch()
-        tabs.addTab(tab_summary, "خلاصه مالی و مشخصات")
+        lbl_tbl_title = QLabel("ریز صورت‌حساب و تراز مالی دقیق دانش‌آموز (شامل تمامی بدهی‌ها و پرداختی‌ها):")
+        lbl_tbl_title.setStyleSheet("font-weight: bold; margin-top: 5px;")
+        sum_layout.addWidget(lbl_tbl_title)
+
+        self.tbl_ledger = QTableWidget()
+        self.tbl_ledger.setColumnCount(6)
+        self.tbl_ledger.setHorizontalHeaderLabels(["تاریخ", "عنوان / بابت", "روش پرداخت", "مبلغ (تومان)", "وضعیت", "کد پیگیری"])
+        self.tbl_ledger.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        sum_layout.addWidget(self.tbl_ledger)
+
+        btn_export_st_ledger = QPushButton("خروجی اکسل تراز مالی این دانش‌آموز")
+        btn_export_st_ledger.setProperty("accent", "true")
+        btn_export_st_ledger.clicked.connect(self.export_student_ledger_excel)
+        sum_layout.addWidget(btn_export_st_ledger, alignment=Qt.AlignRight)
+
+        self.load_financial_ledger()
+        tabs.addTab(tab_summary, "تراز مالی و ریز صورت‌حساب")
 
         # Tab 2: Phone Numbers
         tab_phones = QWidget()
@@ -232,6 +281,47 @@ class StudentProfileDialog(QDialog):
         btn_close = QPushButton("بستن")
         btn_close.clicked.connect(self.accept)
         layout.addWidget(btn_close, alignment=Qt.AlignLeft)
+
+    def load_financial_ledger(self):
+        payments = self.payment_repo.list_payments(student_id=self.student_id, limit=500)
+        self.tbl_ledger.setRowCount(len(payments))
+        method_map = {"cash": "نقد", "pos": "کارت‌خوان", "card_to_card": "کارت به کارت"}
+
+        for r, p in enumerate(payments):
+            self.tbl_ledger.setItem(r, 0, QTableWidgetItem(gregorian_to_shamsi(p["paid_date"])))
+
+            desc = p.get("description") or p.get("payment_type_name", "تراکنش مالی")
+            self.tbl_ledger.setItem(r, 1, QTableWidgetItem(desc))
+            self.tbl_ledger.setItem(r, 2, QTableWidgetItem(method_map.get(p["method"], p["method"])))
+
+            amt_item = QTableWidgetItem(format_currency(p["amount"]))
+            if p["status"] == "pending":
+                amt_item.setForeground(Qt.red)
+            self.tbl_ledger.setItem(r, 3, amt_item)
+
+            st_text = "پرداخت‌شده" if p["status"] == "paid" else "بدهی / تسویه‌نشده"
+            self.tbl_ledger.setItem(r, 4, QTableWidgetItem(st_text))
+            self.tbl_ledger.setItem(r, 5, QTableWidgetItem(p.get("bank_reference_number") or p.get("unique_code") or "-"))
+
+    def export_student_ledger_excel(self):
+        s = self.student_repo.get_by_id(self.student_id)
+        fpath, _ = QFileDialog.getSaveFileName(self, "ذخیره تراز مالی دانش‌آموز", f"Taraz_{s['unique_code']}.xlsx", "Excel Files (*.xlsx)")
+        if fpath:
+            payments = self.payment_repo.list_payments(student_id=self.student_id, limit=1000)
+            headers = ["تاریخ", "شرح و بابت", "روش پرداخت", "مبلغ (تومان)", "وضعیت پرداخت", "کد پیگیری / فاکتور"]
+            rows = []
+            method_map = {"cash": "نقد", "pos": "کارت‌خوان", "card_to_card": "کارت به کارت"}
+            for p in payments:
+                rows.append([
+                    gregorian_to_shamsi(p.get("paid_date", "")),
+                    p.get("description") or p.get("payment_type_name", ""),
+                    method_map.get(p.get("method"), p.get("method")),
+                    p.get("amount", 0.0),
+                    "پرداخت‌شده" if p.get("status") == "paid" else "بدهی تسویه‌نشده",
+                    p.get("bank_reference_number") or p.get("unique_code") or "-"
+                ])
+            ExcelExporter.export_table_to_excel(fpath, headers, rows, title=f"تراز مالی: {s['first_name']} {s['last_name']}")
+            QMessageBox.information(self, "موفقیت", "فایل تراز مالی دانش‌آموز با موفقیت ایجاد شد.")
 
     def load_phones(self):
         phones = self.student_repo.get_phones(self.student_id)
@@ -375,7 +465,7 @@ class StudentManagementWidget(QWidget):
             s_id = s["id"]
             btn_edit.clicked.connect(lambda _, id=s_id: self.edit_student(id))
 
-            btn_prof = QPushButton("پروفایل")
+            btn_prof = QPushButton("پروفایل / تراز")
             btn_prof.clicked.connect(lambda _, id=s_id: self.view_profile_by_id(id))
 
             btn_lay.addWidget(btn_edit)
@@ -408,7 +498,7 @@ class StudentManagementWidget(QWidget):
 
 
 class StudentPickerDialog(QDialog):
-    """Search Picker Dialog showing details (Name, Code, Father Name, Phone) before adding to class roster."""
+    """Search Picker Dialog showing details (Name, Code, Father Name, Phone) before selecting student."""
     def __init__(self, db_path=None, parent=None):
         super().__init__(parent)
         self.db_path = db_path
@@ -462,7 +552,6 @@ class StudentPickerDialog(QDialog):
             self.tbl.setItem(r, 2, QTableWidgetItem(s.get("father_name") or "-"))
             self.tbl.setItem(r, 3, QTableWidgetItem(to_persian_digits(s.get("primary_phone") or "-")))
 
-            # store student dict
             self.tbl.item(r, 0).setData(Qt.UserRole, s)
 
     def confirm_selection(self):
@@ -477,7 +566,7 @@ class StudentPickerDialog(QDialog):
 
 
 class TermClassManagementWidget(QWidget):
-    """Terms and Classes Management View."""
+    """Terms and Classes Management View with tuition, book and other fees."""
     def __init__(self, db_path=None, parent=None):
         super().__init__(parent)
         self.db_path = db_path
@@ -508,8 +597,8 @@ class TermClassManagementWidget(QWidget):
         self.tab_classes = QWidget()
         c_layout = QVBoxLayout(self.tab_classes)
         self.tbl_classes = QTableWidget()
-        self.tbl_classes.setColumnCount(7)
-        self.tbl_classes.setHorizontalHeaderLabels(["کد", "نام کلاس", "استاد", "ترم", "ظرفیت / ثبت‌نام", "وضعیت", "عملیات"])
+        self.tbl_classes.setColumnCount(8)
+        self.tbl_classes.setHorizontalHeaderLabels(["کد", "نام کلاس", "استاد", "ترم", "شهریه", "کتاب", "ظرفیت / ثبت‌نام", "عملیات"])
         self.tbl_classes.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         c_layout.addWidget(self.tbl_classes)
         tabs.addTab(self.tab_classes, "لیست کلاس‌ها")
@@ -517,8 +606,8 @@ class TermClassManagementWidget(QWidget):
         self.tab_terms = QWidget()
         t_layout = QVBoxLayout(self.tab_terms)
         self.tbl_terms = QTableWidget()
-        self.tbl_terms.setColumnCount(4)
-        self.tbl_terms.setHorizontalHeaderLabels(["نام ترم", "تاریخ شروع", "تاریخ پایان", "وضعیت"])
+        self.tbl_terms.setColumnCount(5)
+        self.tbl_terms.setHorizontalHeaderLabels(["نام ترم", "تاریخ شروع", "تاریخ پایان", "وضعیت", "تغییر وضعیت"])
         self.tbl_terms.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         t_layout.addWidget(self.tbl_terms)
         tabs.addTab(self.tab_terms, "لیست ترم‌ها")
@@ -534,8 +623,19 @@ class TermClassManagementWidget(QWidget):
         for r, t in enumerate(terms):
             self.tbl_terms.setItem(r, 0, QTableWidgetItem(t["name"]))
             self.tbl_terms.setItem(r, 1, QTableWidgetItem(gregorian_to_shamsi(t.get("start_date"))))
-            self.tbl_terms.setItem(r, 2, QTableWidgetItem(gregorian_to_shamsi(t.get("end_date"))))
-            self.tbl_terms.setItem(r, 3, QTableWidgetItem("باز" if t["status"] == "open" else "بسته"))
+            self.tbl_terms.setItem(r, 2, QTableWidgetItem(gregorian_to_shamsi(t.get("end_date")) or "-"))
+
+            st_text = "باز" if t["status"] == "open" else "بسته"
+            self.tbl_terms.setItem(r, 3, QTableWidgetItem(st_text))
+
+            btn_toggle = QPushButton("بستن ترم" if t["status"] == "open" else "باز کردن ترم")
+            tid = t["id"]
+            btn_toggle.clicked.connect(lambda _, id=tid: self.toggle_term(id))
+            self.tbl_terms.setCellWidget(r, 4, btn_toggle)
+
+    def toggle_term(self, term_id):
+        self.term_repo.toggle_term_status(term_id)
+        self.load_terms()
 
     def load_classes(self):
         classes = self.class_repo.list_classes()
@@ -545,28 +645,34 @@ class TermClassManagementWidget(QWidget):
             self.tbl_classes.setItem(r, 1, QTableWidgetItem(c["name"]))
             self.tbl_classes.setItem(r, 2, QTableWidgetItem(c.get("teacher_name") or "-"))
             self.tbl_classes.setItem(r, 3, QTableWidgetItem(c.get("term_name") or "-"))
+            self.tbl_classes.setItem(r, 4, QTableWidgetItem(format_currency(c.get("tuition_fee", 0))))
+            self.tbl_classes.setItem(r, 5, QTableWidgetItem(format_currency(c.get("book_fee", 0))))
 
             cap_str = f"{c['enrolled_count']} / {c['capacity']}"
-            self.tbl_classes.setItem(r, 4, QTableWidgetItem(to_persian_digits(cap_str)))
-            self.tbl_classes.setItem(r, 5, QTableWidgetItem("فعال" if c["status"] == "active" else "بسته"))
+            self.tbl_classes.setItem(r, 6, QTableWidgetItem(to_persian_digits(cap_str)))
 
             btn_roster = QPushButton("لیست کلاس / انتقال")
             c_id = c["id"]
             btn_roster.clicked.connect(lambda _, id=c_id: self.open_roster(id))
-            self.tbl_classes.setCellWidget(r, 6, btn_roster)
+            self.tbl_classes.setCellWidget(r, 7, btn_roster)
 
     def add_term(self):
         dlg = QDialog(self)
         dlg.setWindowTitle("افزودن ترم جدید")
         layout = QFormLayout(dlg)
         txt_name = QLineEdit()
+        txt_start_date = QLineEdit()
+        txt_start_date.setPlaceholderText("مثال: 1403/01/15 (پیش‌فرض امروز)")
+
         layout.addRow("نام ترم:", txt_name)
-        btn = QPushButton("ذخیره")
+        layout.addRow("تاریخ شروع ترم:", txt_start_date)
+        btn = QPushButton("ذخیره ترم")
         layout.addRow(btn)
 
         def save():
             if txt_name.text().strip():
-                self.term_repo.create_term(txt_name.text().strip())
+                s_date = txt_start_date.text().strip()
+                self.term_repo.create_term(txt_name.text().strip(), start_date=s_date)
                 dlg.accept()
                 self.load_terms()
 
@@ -580,7 +686,8 @@ class TermClassManagementWidget(QWidget):
             return
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("افزودن کلاس جدید")
+        dlg.setWindowTitle("افزودن کلاس جدید با شهریه و هزینه کتاب")
+        dlg.resize(450, 380)
         layout = QFormLayout(dlg)
 
         txt_code = QLineEdit()
@@ -590,15 +697,34 @@ class TermClassManagementWidget(QWidget):
         for t in terms:
             cmb_term.addItem(t["name"], t["id"])
 
+        spn_tuition = QDoubleSpinBox()
+        spn_tuition.setRange(0, 100000000)
+        spn_tuition.setSingleStep(50000)
+        spn_tuition.setDecimals(0)
+
+        spn_book = QDoubleSpinBox()
+        spn_book.setRange(0, 50000000)
+        spn_book.setSingleStep(10000)
+        spn_book.setDecimals(0)
+
+        spn_other = QDoubleSpinBox()
+        spn_other.setRange(0, 50000000)
+        spn_other.setDecimals(0)
+        txt_other_title = QLineEdit("هزینه جانبی")
+
         txt_cap = QLineEdit("30")
 
         layout.addRow("کد کلاس:", txt_code)
         layout.addRow("نام کلاس:", txt_name)
         layout.addRow("استاد:", txt_teacher)
         layout.addRow("ترم مربوطه:", cmb_term)
+        layout.addRow("مبلغ شهریه ثابت (تومان):", spn_tuition)
+        layout.addRow("مبلغ کتاب (تومان):", spn_book)
+        layout.addRow("عنوان سایر هزینه‌ها:", txt_other_title)
+        layout.addRow("مبلغ سایر هزینه‌ها (تومان):", spn_other)
         layout.addRow("ظرفیت:", txt_cap)
 
-        btn = QPushButton("ذخیره")
+        btn = QPushButton("ذخیره کلاس")
         layout.addRow(btn)
 
         def save():
@@ -609,7 +735,12 @@ class TermClassManagementWidget(QWidget):
                     cap = int(to_latin_digits(txt_cap.text()))
                 except ValueError:
                     cap = 30
-                self.class_repo.create_class(code, name, txt_teacher.text().strip(), cmb_term.currentData(), cap)
+                self.class_repo.create_class(
+                    code=code, name=name, teacher_name=txt_teacher.text().strip(),
+                    term_id=cmb_term.currentData(), capacity=cap,
+                    tuition_fee=spn_tuition.value(), book_fee=spn_book.value(),
+                    other_fee=spn_other.value(), other_fee_title=txt_other_title.text().strip()
+                )
                 dlg.accept()
                 self.load_classes()
 
@@ -653,7 +784,7 @@ class TermClassManagementWidget(QWidget):
                 btn_lay.setContentsMargins(0, 0, 0, 0)
 
                 btn_transfer = QPushButton("انتقال")
-                btn_rem = QPushButton("حذف")
+                btn_rem = QPushButton("حذف از کلاس (لغو بدهی)")
                 s_id = s["id"]
                 btn_transfer.clicked.connect(lambda _, id=s_id: transfer_st(id))
                 btn_rem.clicked.connect(lambda _, id=s_id: remove_st(id))
@@ -704,9 +835,10 @@ class TermClassManagementWidget(QWidget):
             tdlg.exec()
 
         def remove_st(student_id):
-            self.class_repo.remove_enrollment(class_id, student_id)
-            refresh_roster()
-            self.load_classes()
+            if QMessageBox.question(dlg, "تأیید حذف", "آیا از حذف دانش‌آموز از کلاس و لغو بدهی‌های معوق مرتبط با این کلاس اطمینان دارید؟") == QMessageBox.Yes:
+                self.class_repo.remove_enrollment(class_id, student_id)
+                refresh_roster()
+                self.load_classes()
 
         btn_enroll.clicked.connect(enroll_st)
         refresh_roster()

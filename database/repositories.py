@@ -259,9 +259,10 @@ class TermRepository:
     def create_term(self, name: str, start_date: str = "", end_date: str = "", status: str = "open") -> int:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
+        now_date = start_date or datetime.now().strftime("%Y-%m-%d")
         cursor.execute(
             "INSERT INTO terms (name, start_date, end_date, status) VALUES (?, ?, ?, ?)",
-            (name, start_date, end_date, status)
+            (name, now_date, end_date, status)
         )
         term_id = cursor.lastrowid
         conn.commit()
@@ -277,6 +278,20 @@ class TermRepository:
         )
         conn.commit()
         conn.close()
+
+    def toggle_term_status(self, term_id: int) -> str:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM terms WHERE id = ?", (term_id,))
+        row = cursor.fetchone()
+        if row:
+            new_status = "closed" if row["status"] == "open" else "open"
+            cursor.execute("UPDATE terms SET status = ? WHERE id = ?", (new_status, term_id))
+            conn.commit()
+            conn.close()
+            return new_status
+        conn.close()
+        return "open"
 
     def get_by_id(self, term_id: int) -> Optional[Dict[str, Any]]:
         conn = get_connection(self.db_path)
@@ -324,13 +339,14 @@ class ClassRepository:
         self.db_path = db_path
 
     def create_class(self, code: str, name: str, teacher_name: str, term_id: int,
-                     capacity: int = 30, start_date: str = "") -> int:
+                     capacity: int = 30, start_date: str = "", tuition_fee: float = 0,
+                     book_fee: float = 0, other_fee: float = 0, other_fee_title: str = "هزینه جانبی") -> int:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
-            """INSERT INTO classes (code, name, teacher_name, term_id, start_date, capacity, status)
-               VALUES (?, ?, ?, ?, ?, ?, 'active')""",
-            (code, name, teacher_name, term_id, start_date, capacity)
+            """INSERT INTO classes (code, name, teacher_name, term_id, start_date, capacity, tuition_fee, book_fee, other_fee, other_fee_title, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')""",
+            (code, name, teacher_name, term_id, start_date, capacity, tuition_fee, book_fee, other_fee, other_fee_title)
         )
         class_id = cursor.lastrowid
         conn.commit()
@@ -338,13 +354,15 @@ class ClassRepository:
         return class_id
 
     def update_class(self, class_id: int, code: str, name: str, teacher_name: str,
-                     capacity: int, start_date: str, status: str) -> None:
+                     capacity: int, start_date: str, status: str, tuition_fee: float = 0,
+                     book_fee: float = 0, other_fee: float = 0, other_fee_title: str = "هزینه جانبی") -> None:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
-            """UPDATE classes SET code=?, name=?, teacher_name=?, capacity=?, start_date=?, status=?
+            """UPDATE classes SET code=?, name=?, teacher_name=?, capacity=?, start_date=?, status=?,
+               tuition_fee=?, book_fee=?, other_fee=?, other_fee_title=?
                WHERE id=?""",
-            (code, name, teacher_name, capacity, start_date, status, class_id)
+            (code, name, teacher_name, capacity, start_date, status, tuition_fee, book_fee, other_fee, other_fee_title, class_id)
         )
         conn.commit()
         conn.close()
@@ -400,48 +418,87 @@ class ClassRepository:
         )
         enrollment_id = cursor.lastrowid
 
-        cursor.execute("SELECT term_id FROM classes WHERE id = ?", (class_id,))
-        term_id = cursor.fetchone()[0]
+        cursor.execute("SELECT * FROM classes WHERE id = ?", (class_id,))
+        cls = cursor.fetchone()
+        term_id = cls["term_id"]
+
         cursor.execute(
             "INSERT OR IGNORE INTO student_terms (student_id, term_id, enrolled_at) VALUES (?, ?, ?)",
             (student_id, term_id, now)
         )
 
+        def get_type_id(pt_name):
+            cursor.execute("SELECT id FROM payment_types WHERE name = ?", (pt_name,))
+            r = cursor.fetchone()
+            return r["id"] if r else 1
+
+        p_repo = PaymentRepository(self.db_path)
+
+        # Commit existing transaction before calling record_payment on separate connection
         conn.commit()
+
+        if cls["tuition_fee"] > 0:
+            p_repo.record_payment(
+                student_id=student_id,
+                payment_type_id=get_type_id("شهریه"),
+                amount=cls["tuition_fee"],
+                method="cash",
+                term_id=term_id,
+                description=f"شهریه کلاس {cls['name']} ({cls['code']})",
+                status="pending",
+                create_invoice=False
+            )
+        if cls["book_fee"] > 0:
+            p_repo.record_payment(
+                student_id=student_id,
+                payment_type_id=get_type_id("کتاب"),
+                amount=cls["book_fee"],
+                method="cash",
+                term_id=term_id,
+                description=f"کتاب کلاس {cls['name']} ({cls['code']})",
+                status="pending",
+                create_invoice=False
+            )
+        if cls["other_fee"] > 0:
+            p_repo.record_payment(
+                student_id=student_id,
+                payment_type_id=get_type_id("هزینه‌های جانبی"),
+                amount=cls["other_fee"],
+                method="cash",
+                term_id=term_id,
+                description=f"{cls['other_fee_title'] or 'هزینه جانبی'} - کلاس {cls['name']}",
+                status="pending",
+                create_invoice=False
+            )
+
         conn.close()
         return enrollment_id
 
     def remove_enrollment(self, class_id: int, student_id: int) -> None:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
+
+        cursor.execute("SELECT name, code FROM classes WHERE id = ?", (class_id,))
+        cls = cursor.fetchone()
+
         cursor.execute(
             "DELETE FROM class_enrollments WHERE class_id = ? AND student_id = ?",
             (class_id, student_id)
         )
+
+        if cls:
+            pattern = f"%کلاس {cls['name']}%"
+            cursor.execute(
+                "DELETE FROM payments WHERE student_id = ? AND status = 'pending' AND description LIKE ?",
+                (student_id, pattern)
+            )
+
         conn.commit()
         conn.close()
 
     def transfer_student(self, from_class_id: int, to_class_id: int, student_id: int) -> None:
-        conn = get_connection(self.db_path)
-        cursor = conn.cursor()
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor.execute(
-            "UPDATE class_enrollments SET status = 'transferred_out' WHERE class_id = ? AND student_id = ?",
-            (from_class_id, student_id)
-        )
-        cursor.execute(
-            "INSERT INTO class_enrollments (class_id, student_id, enrolled_at, status) VALUES (?, ?, ?, 'active')",
-            (to_class_id, student_id, now)
-        )
-        cursor.execute("SELECT term_id FROM classes WHERE id = ?", (to_class_id,))
-        term_id = cursor.fetchone()[0]
-        cursor.execute(
-            "INSERT OR IGNORE INTO student_terms (student_id, term_id, enrolled_at) VALUES (?, ?, ?)",
-            (student_id, term_id, now)
-        )
-
-        conn.commit()
-        conn.close()
+        self.remove_enrollment(from_class_id, student_id)
+        self.add_enrollment(to_class_id, student_id)
 
     def get_class_roster(self, class_id: int) -> List[Dict[str, Any]]:
         conn = get_connection(self.db_path)
@@ -530,9 +587,6 @@ class PaymentRepository:
                                   card_destination_id: Optional[int] = None, bank_reference_number: str = "",
                                   card_tracking_code: str = "", description: str = "", status: str = "paid",
                                   recorded_by_user_id: Optional[int] = None) -> List[int]:
-        """
-        Records multiple charge items (e.g. Tuition + Books + Insurance) under a single card swipe or transaction.
-        """
         created_ids = []
         for item in line_items:
             pt_id = item["payment_type_id"]
@@ -558,7 +612,7 @@ class PaymentRepository:
                 description=item_desc,
                 status=status,
                 recorded_by_user_id=recorded_by_user_id,
-                create_invoice=True
+                create_invoice=(status == "paid")
             )
             created_ids.append(pid)
         return created_ids
@@ -609,6 +663,23 @@ class PaymentRepository:
         params.extend([limit, offset])
 
         cursor.execute(sql, params)
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_term_debtors(self, term_id: int) -> List[Dict[str, Any]]:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT s.unique_code, s.first_name, s.last_name, s.father_name,
+                      (SELECT phone_number FROM student_phones WHERE student_id = s.id AND is_primary = 1 LIMIT 1) as primary_phone,
+                      p.description, p.amount, p.paid_date
+               FROM payments p
+               JOIN students s ON p.student_id = s.id
+               WHERE p.term_id = ? AND p.status IN ('pending', 'partial')
+               ORDER BY s.last_name, s.first_name""",
+            (term_id,)
+        )
         rows = cursor.fetchall()
         conn.close()
         return [dict(r) for r in rows]
