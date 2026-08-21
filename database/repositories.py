@@ -92,7 +92,6 @@ class StudentRepository:
                     (student_id, p["phone_number"], p.get("label", "همراه"), 1 if p.get("is_primary") else 0)
                 )
 
-        # Audit log creation
         cursor.execute(
             """INSERT INTO audit_log (entity_type, entity_id, field_name, old_value, new_value, changed_by_user_id, changed_at)
                VALUES ('student', ?, 'created', '', ?, ?, ?)""",
@@ -110,7 +109,6 @@ class StudentRepository:
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Get old values for audit
         cursor.execute("SELECT first_name, last_name, status FROM students WHERE id = ?", (student_id,))
         old = cursor.fetchone()
 
@@ -527,6 +525,44 @@ class PaymentRepository:
         conn.close()
         return payment_id
 
+    def record_multi_item_payment(self, student_id: int, line_items: List[Dict[str, Any]], method: str,
+                                  term_id: Optional[int] = None, pos_device_id: Optional[int] = None,
+                                  card_destination_id: Optional[int] = None, bank_reference_number: str = "",
+                                  card_tracking_code: str = "", description: str = "", status: str = "paid",
+                                  recorded_by_user_id: Optional[int] = None) -> List[int]:
+        """
+        Records multiple charge items (e.g. Tuition + Books + Insurance) under a single card swipe or transaction.
+        """
+        created_ids = []
+        for item in line_items:
+            pt_id = item["payment_type_id"]
+            amt = item["amount"]
+            disc_pct = item.get("discount_percent", 0)
+            disc_amt = item.get("discount_amount", 0)
+            late_fee = item.get("late_fee_amount", 0)
+            item_desc = f"{description} - {item.get('name_label', '')}".strip(" -")
+
+            pid = self.record_payment(
+                student_id=student_id,
+                payment_type_id=pt_id,
+                amount=amt,
+                method=method,
+                term_id=term_id,
+                discount_percent=disc_pct,
+                discount_amount=disc_amt,
+                late_fee_amount=late_fee,
+                pos_device_id=pos_device_id,
+                card_destination_id=card_destination_id,
+                bank_reference_number=bank_reference_number,
+                card_tracking_code=card_tracking_code,
+                description=item_desc,
+                status=status,
+                recorded_by_user_id=recorded_by_user_id,
+                create_invoice=True
+            )
+            created_ids.append(pid)
+        return created_ids
+
     def list_payments(self, student_id: Optional[int] = None, term_id: Optional[int] = None,
                       date_from: str = "", date_to: str = "", status: str = "",
                       payment_type_id: Optional[int] = None, limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
@@ -677,9 +713,10 @@ class ExpenseRepository:
     def add_expense(self, category: str, amount: float, date: str, description: str = "", recorded_by_user_id: Optional[int] = None) -> int:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
+        now_date = date or datetime.now().strftime("%Y-%m-%d")
         cursor.execute(
             "INSERT INTO expenses (category, amount, date, description, recorded_by_user_id) VALUES (?, ?, ?, ?, ?)",
-            (category, amount, date, description, recorded_by_user_id)
+            (category, amount, now_date, description, recorded_by_user_id)
         )
         expense_id = cursor.lastrowid
         conn.commit()
@@ -744,6 +781,20 @@ class ConfigRepository:
         conn.close()
         return pos_id
 
+    def update_pos_device(self, pos_id: int, label: str, bank_name: str) -> None:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE pos_devices SET label = ?, bank_name = ? WHERE id = ?", (label, bank_name, pos_id))
+        conn.commit()
+        conn.close()
+
+    def delete_pos_device(self, pos_id: int) -> None:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE pos_devices SET is_active = 0 WHERE id = ?", (pos_id,))
+        conn.commit()
+        conn.close()
+
     def list_card_destinations(self) -> List[Dict[str, Any]]:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
@@ -760,6 +811,20 @@ class ConfigRepository:
         conn.commit()
         conn.close()
         return card_id
+
+    def update_card_destination(self, card_id: int, card_number: str, owner_label: str) -> None:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE card_destinations SET card_number = ?, owner_label = ? WHERE id = ?", (card_number, owner_label, card_id))
+        conn.commit()
+        conn.close()
+
+    def delete_card_destination(self, card_id: int) -> None:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE card_destinations SET is_active = 0 WHERE id = ?", (card_id,))
+        conn.commit()
+        conn.close()
 
     def list_payment_types(self) -> List[Dict[str, Any]]:
         conn = get_connection(self.db_path)

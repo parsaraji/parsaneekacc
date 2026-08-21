@@ -2,7 +2,7 @@ import os
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QTextEdit,
-    QDialog, QFormLayout, QMessageBox, QCheckBox, QDoubleSpinBox, QSpinBox, QTabWidget
+    QDialog, QFormLayout, QMessageBox, QCheckBox, QDoubleSpinBox, QSpinBox, QTabWidget, QGroupBox
 )
 from PySide6.QtCore import Qt, QMarginsF
 from PySide6.QtGui import QTextDocument, QPageLayout, QPageSize
@@ -14,7 +14,7 @@ from business_logic.financial import FinancialEngine
 from reports.invoice_renderer import InvoiceTemplateRenderer
 
 class RecordPaymentDialog(QDialog):
-    """Dialog for recording a payment or installment plan against a student."""
+    """Dialog for recording single or multi-category payments, debt charges, or installment plans against a student."""
     def __init__(self, db_path=None, student_id=None, parent=None):
         super().__init__(parent)
         self.db_path = db_path
@@ -25,8 +25,10 @@ class RecordPaymentDialog(QDialog):
         self.config_repo = ConfigRepository(db_path)
         self.financial_engine = FinancialEngine(db_path)
 
-        self.setWindowTitle("ثبت تراکنش پرداخت یا اقساط جدید")
-        self.resize(500, 550)
+        self.line_items = []  # List of dicts for multi-item payment
+
+        self.setWindowTitle("ثبت تراکنش پرداخت، بدهی جدید یا اقساط")
+        self.resize(600, 620)
         self.init_ui()
 
     def init_ui(self):
@@ -51,46 +53,54 @@ class RecordPaymentDialog(QDialog):
         for t in terms:
             self.cmb_term.addItem(t["name"], t["id"])
 
-        # Category
-        self.cmb_type = QComboBox()
+        form.addRow("دانش‌آموز:", self.cmb_student)
+        form.addRow("ترم:", self.cmb_term)
+
+        # Multi-item Charges Group
+        box_items = QGroupBox("آیتم‌های دریافتی / بدهی (امکان افزودن چندین بابت مانند شهریه + کتاب در یک کارت کشیدن)")
+        v_items = QVBoxLayout(box_items)
+
+        self.tbl_items = QTableWidget()
+        self.tbl_items.setColumnCount(3)
+        self.tbl_items.setHorizontalHeaderLabels(["بابت", "مبلغ (تومان)", "عملیات"])
+        self.tbl_items.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        v_items.addWidget(self.tbl_items)
+
+        add_item_h = QHBoxLayout()
+        self.cmb_item_type = QComboBox()
         ptypes = self.config_repo.list_payment_types()
         for pt in ptypes:
-            self.cmb_type.addItem(pt["name"], pt["id"])
+            self.cmb_item_type.addItem(pt["name"], pt["id"])
 
-        # Amounts
-        self.spn_amount = QDoubleSpinBox()
-        self.spn_amount.setRange(0, 1000000000)
-        self.spn_amount.setSingleStep(50000)
-        self.spn_amount.setDecimals(0)
+        self.spn_item_amount = QDoubleSpinBox()
+        self.spn_item_amount.setRange(0, 1000000000)
+        self.spn_item_amount.setSingleStep(50000)
+        self.spn_item_amount.setDecimals(0)
 
-        self.spn_discount_pct = QDoubleSpinBox()
-        self.spn_discount_pct.setRange(0, 100)
+        btn_add_line = QPushButton("افزودن آیتم +")
+        btn_add_line.clicked.connect(self.add_line_item)
 
-        self.spn_discount_amt = QDoubleSpinBox()
-        self.spn_discount_amt.setRange(0, 100000000)
-        self.spn_discount_amt.setDecimals(0)
+        add_item_h.addWidget(self.cmb_item_type, 2)
+        add_item_h.addWidget(self.spn_item_amount, 2)
+        add_item_h.addWidget(btn_add_line, 1)
+        v_items.addLayout(add_item_h)
 
-        self.spn_late_fee = QDoubleSpinBox()
-        self.spn_late_fee.setRange(0, 100000000)
-        self.spn_late_fee.setDecimals(0)
+        layout.addLayout(form)
+        layout.addWidget(box_items)
 
-        # Installment Plan Option
-        self.chk_installment = QCheckBox("ثبت به صورت طرح اقساطی")
-        self.chk_installment.toggled.connect(self.on_installment_toggled)
+        # Payment Status, Method and Details
+        form_pay = QFormLayout()
 
-        self.spn_inst_count = QSpinBox()
-        self.spn_inst_count.setRange(2, 24)
-        self.spn_inst_count.setValue(3)
-        self.spn_inst_count.setEnabled(False)
+        self.cmb_status = QComboBox()
+        self.cmb_status.addItem("پرداخت‌شده (تکمیل)", "paid")
+        self.cmb_status.addItem("معوق / ثبت به عنوان بدهی دانش‌آموز", "pending")
 
-        # Method
         self.cmb_method = QComboBox()
         self.cmb_method.addItem("نقد", "cash")
         self.cmb_method.addItem("کارت‌خوان (POS)", "pos")
         self.cmb_method.addItem("کارت به کارت", "card_to_card")
         self.cmb_method.currentIndexChanged.connect(self.on_method_changed)
 
-        # Configured POS / Card
         self.cmb_pos = QComboBox()
         pos_list = self.config_repo.list_pos_devices()
         for p in pos_list:
@@ -106,22 +116,19 @@ class RecordPaymentDialog(QDialog):
 
         self.txt_desc = QLineEdit()
 
-        form.addRow("دانش‌آموز:", self.cmb_student)
-        form.addRow("ترم:", self.cmb_term)
-        form.addRow("بابت:", self.cmb_type)
-        form.addRow("مبلغ اولیه:", self.spn_amount)
-        form.addRow("تخفیف (درصد):", self.spn_discount_pct)
-        form.addRow("تخفیف (مبلغی):", self.spn_discount_amt)
-        form.addRow("جریمه/هزینه اضافی:", self.spn_late_fee)
-        form.addRow("", self.chk_installment)
-        form.addRow("تعداد اقساط:", self.spn_inst_count)
-        form.addRow("روش پرداخت:", self.cmb_method)
-        form.addRow("دستگاه کارت‌خوان:", self.cmb_pos)
-        form.addRow("حساب کارت به کارت:", self.cmb_card)
-        form.addRow("شماره پیگیری/فیش:", self.txt_ref_code)
-        form.addRow("توضیحات:", self.txt_desc)
+        form_pay.addRow("وضعیت دریافت:", self.cmb_status)
+        form_pay.addRow("روش پرداخت:", self.cmb_method)
+        form_pay.addRow("دستگاه کارت‌خوان:", self.cmb_pos)
+        form_pay.addRow("حساب کارت به کارت:", self.cmb_card)
+        form_pay.addRow("شماره پیگیری/فیش:", self.txt_ref_code)
+        form_pay.addRow("توضیحات:", self.txt_desc)
 
-        layout.addLayout(form)
+        layout.addLayout(form_pay)
+
+        # Total Label
+        self.lbl_total_sum = QLabel("مجموع کل قابل پرداخت: ۰ تومان")
+        self.lbl_total_sum.setStyleSheet("font-size: 13px; font-weight: bold; color: #2980B9; margin-top: 5px;")
+        layout.addWidget(self.lbl_total_sum)
 
         # Buttons
         btn_box = QHBoxLayout()
@@ -138,8 +145,41 @@ class RecordPaymentDialog(QDialog):
 
         self.on_method_changed()
 
-    def on_installment_toggled(self, checked: bool):
-        self.spn_inst_count.setEnabled(checked)
+    def add_line_item(self):
+        amt = self.spn_item_amount.value()
+        if amt <= 0:
+            QMessageBox.warning(self, "خطا", "لطفاً مبلغ معتبر وارد کنید.")
+            return
+
+        pt_id = self.cmb_item_type.currentData()
+        pt_name = self.cmb_item_type.currentText()
+
+        self.line_items.append({
+            "payment_type_id": pt_id,
+            "name_label": pt_name,
+            "amount": amt
+        })
+        self.refresh_items_table()
+
+    def refresh_items_table(self):
+        self.tbl_items.setRowCount(len(self.line_items))
+        total = 0.0
+        for r, item in enumerate(self.line_items):
+            self.tbl_items.setItem(r, 0, QTableWidgetItem(item["name_label"]))
+            self.tbl_items.setItem(r, 1, QTableWidgetItem(format_currency(item["amount"])))
+            total += item["amount"]
+
+            btn_del = QPushButton("حذف")
+            idx = r
+            btn_del.clicked.connect(lambda _, i=idx: self.remove_line_item(i))
+            self.tbl_items.setCellWidget(r, 2, btn_del)
+
+        self.lbl_total_sum.setText(f"مجموع کل قابل پرداخت: {format_currency(total)}")
+
+    def remove_line_item(self, index: int):
+        if 0 <= index < len(self.line_items):
+            self.line_items.pop(index)
+            self.refresh_items_table()
 
     def on_method_changed(self):
         method = self.cmb_method.currentData()
@@ -152,62 +192,28 @@ class RecordPaymentDialog(QDialog):
             QMessageBox.warning(self, "خطا", "لطفاً دانش‌آموز را انتخاب کنید.")
             return
 
-        base_amount = self.spn_amount.value()
-        disc_pct = self.spn_discount_pct.value()
-        disc_amt = self.spn_discount_amt.value()
-        late_fee = self.spn_late_fee.value()
-
-        final_amount = self.financial_engine.calculate_discounted_amount(base_amount, disc_pct, disc_amt, late_fee)
-        if final_amount <= 0:
-            QMessageBox.warning(self, "خطا", "مبلغ پرداخت نهایی باید بزرگتر از صفر باشد.")
+        if not self.line_items:
+            QMessageBox.warning(self, "خطا", "لطفاً حداقل یک آیتم پرداختی/بدهی به لیست اضافه کنید.")
             return
 
         method = self.cmb_method.currentData()
+        status = self.cmb_status.currentData()
         pos_id = self.cmb_pos.currentData() if method == "pos" else None
         card_id = self.cmb_card.currentData() if method == "card_to_card" else None
         ref_code = to_latin_digits(self.txt_ref_code.text().strip())
 
-        is_inst = self.chk_installment.isChecked()
-        inst_count = self.spn_inst_count.value() if is_inst else 1
-
-        if is_inst and inst_count > 1:
-            schedule = self.financial_engine.generate_installment_schedule(final_amount, inst_count)
-            for idx, inst in enumerate(schedule, 1):
-                st = "paid" if idx == 1 else "pending"
-                self.payment_repo.record_payment(
-                    student_id=st_id,
-                    payment_type_id=self.cmb_type.currentData(),
-                    amount=inst["amount"],
-                    method=method if idx == 1 else "cash",
-                    term_id=self.cmb_term.currentData(),
-                    pos_device_id=pos_id if idx == 1 else None,
-                    card_destination_id=card_id if idx == 1 else None,
-                    bank_reference_number=ref_code if idx == 1 else "",
-                    description=f"{self.txt_desc.text().strip()} (قسط {idx} از {inst_count})",
-                    is_installment=True,
-                    installment_no=idx,
-                    installment_total=inst_count,
-                    status=st,
-                    create_invoice=(st == "paid")
-                )
-        else:
-            self.payment_repo.record_payment(
-                student_id=st_id,
-                payment_type_id=self.cmb_type.currentData(),
-                amount=final_amount,
-                method=method,
-                term_id=self.cmb_term.currentData(),
-                discount_percent=disc_pct,
-                discount_amount=disc_amt,
-                late_fee_amount=late_fee,
-                pos_device_id=pos_id,
-                card_destination_id=card_id,
-                bank_reference_number=ref_code,
-                card_tracking_code=ref_code,
-                description=self.txt_desc.text().strip(),
-                status="paid",
-                create_invoice=True
-            )
+        self.payment_repo.record_multi_item_payment(
+            student_id=st_id,
+            line_items=self.line_items,
+            method=method,
+            term_id=self.cmb_term.currentData(),
+            pos_device_id=pos_id,
+            card_destination_id=card_id,
+            bank_reference_number=ref_code,
+            card_tracking_code=ref_code,
+            description=self.txt_desc.text().strip(),
+            status=status
+        )
 
         QMessageBox.information(self, "موفقیت", "تراکنش با موفقیت ثبت گردید.")
         self.accept()
@@ -285,7 +291,7 @@ class PaymentsAndInvoicingWidget(QWidget):
 
         top_bar = QHBoxLayout()
 
-        self.btn_new_payment = QPushButton(" ثبت پرداخت جدید +")
+        self.btn_new_payment = QPushButton(" ثبت پرداخت / بدهی جدید +")
         self.btn_new_payment.setProperty("accent", "true")
         self.btn_new_payment.clicked.connect(self.record_new_payment)
 
@@ -341,7 +347,10 @@ class PaymentsAndInvoicingWidget(QWidget):
             self.table.setItem(row, 3, QTableWidgetItem(p["payment_type_name"]))
 
             fmt_amt = format_currency(p["amount"], currency_unit, use_persian)
-            self.table.setItem(row, 4, QTableWidgetItem(fmt_amt))
+            amt_item = QTableWidgetItem(fmt_amt)
+            if p["status"] == "pending":
+                amt_item.setForeground(Qt.red)
+            self.table.setItem(row, 4, amt_item)
 
             self.table.setItem(row, 5, QTableWidgetItem(method_map.get(p["method"], p["method"])))
             self.table.setItem(row, 6, QTableWidgetItem(gregorian_to_shamsi(p["paid_date"])))

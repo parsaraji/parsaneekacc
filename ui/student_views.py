@@ -5,22 +5,24 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QTextEdit,
     QDialog, QFormLayout, QMessageBox, QTabWidget, QFileDialog, QListWidget, QListWidgetItem
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from database.repositories import StudentRepository, TermRepository, ClassRepository, AuditRepository, AttachmentRepository
 from business_logic.formatters import to_persian_digits, to_latin_digits, gregorian_to_shamsi, format_currency
 from business_logic.financial import FinancialEngine
 
 class StudentDialog(QDialog):
-    """Dialog for creating or editing a student."""
+    """Dialog for creating or editing a student with direct class enrollment option."""
     def __init__(self, parent=None, db_path=None, student_id=None, user_id=None):
         super().__init__(parent)
         self.db_path = db_path
         self.student_id = student_id
         self.user_id = user_id
         self.student_repo = StudentRepository(db_path)
+        self.class_repo = ClassRepository(db_path)
 
         self.setWindowTitle("ویرایش دانش‌آموز" if student_id else "افزودن دانش‌آموز جدید")
-        self.resize(450, 400)
+        self.resize(480, 450)
         self.init_ui()
         if student_id:
             self.load_student_data()
@@ -42,6 +44,13 @@ class StudentDialog(QDialog):
         self.cmb_status.addItem("انصرافی", "dropped_out")
         self.cmb_status.addItem("فارغ‌التحصیل", "graduated")
 
+        # Optional Direct Class Enrollment
+        self.cmb_class = QComboBox()
+        self.cmb_class.addItem("-- بدون ثبت‌نام اولیه در کلاس --", None)
+        active_classes = self.class_repo.list_classes(status="active")
+        for c in active_classes:
+            self.cmb_class.addItem(f"{c['name']} ({c['code']}) - استاد: {c.get('teacher_name', '-')}", c['id'])
+
         self.txt_notes = QTextEdit()
         self.txt_notes.setMaximumHeight(80)
 
@@ -51,6 +60,8 @@ class StudentDialog(QDialog):
         form.addRow("شماره همراه اصلی:", self.txt_phone)
         form.addRow("آدرس:", self.txt_address)
         form.addRow("وضعیت:", self.cmb_status)
+        if not self.student_id:
+            form.addRow("ثبت‌نام مستقیم در کلاس:", self.cmb_class)
         form.addRow("یادداشت خصوصی:", self.txt_notes)
 
         layout.addLayout(form)
@@ -106,6 +117,11 @@ class StudentDialog(QDialog):
             phones_list = [{"phone_number": phone, "is_primary": True}] if phone else None
             self.student_id = self.student_repo.create_student(first_name, last_name, father_name, address, notes, phones_list, user_id=self.user_id)
 
+            # Direct class enrollment if chosen
+            chosen_cid = self.cmb_class.currentData()
+            if chosen_cid:
+                self.class_repo.add_enrollment(chosen_cid, self.student_id)
+
         self.accept()
 
 
@@ -122,7 +138,7 @@ class StudentProfileDialog(QDialog):
         self.attachment_repo = AttachmentRepository(db_path)
 
         self.setWindowTitle("شناسنامه کامل دانش‌آموز")
-        self.resize(700, 500)
+        self.resize(720, 520)
         self.init_ui()
 
     def init_ui(self):
@@ -147,7 +163,11 @@ class StudentProfileDialog(QDialog):
         sum_layout.addWidget(QLabel(f"نام پدر: {student.get('father_name', '-')}") )
         sum_layout.addWidget(QLabel(f"آدرس: {student.get('address', '-')}") )
         sum_layout.addWidget(QLabel(f"مجموع پرداختی: {format_currency(fin['total_paid'])}"))
-        sum_layout.addWidget(QLabel(f"بدهی معوق / مانده: {format_currency(fin['total_pending_debt'])}"))
+
+        lbl_debt = QLabel(f"بدهی معوق / مانده بدهی: {format_currency(fin['total_pending_debt'])}")
+        lbl_debt.setStyleSheet("color: #E74C3C; font-weight: bold; font-size: 13px;" if fin['total_pending_debt'] > 0 else "")
+        sum_layout.addWidget(lbl_debt)
+
         sum_layout.addWidget(QLabel(f"مجموع تخفیفات: {format_currency(fin['total_discount'])}"))
         sum_layout.addStretch()
         tabs.addTab(tab_summary, "خلاصه مالی و مشخصات")
@@ -178,10 +198,21 @@ class StudentProfileDialog(QDialog):
         tab_att = QWidget()
         att_lay = QVBoxLayout(tab_att)
         self.list_att = QListWidget()
+        self.list_att.doubleClicked.connect(self.open_attachment_item)
+
+        h_att_btn = QHBoxLayout()
         btn_add_att = QPushButton("افزودن پیوست جدید +")
         btn_add_att.clicked.connect(self.upload_attachment)
+
+        btn_open_att = QPushButton("باز کردن فایل پیوست")
+        btn_open_att.setProperty("accent", "true")
+        btn_open_att.clicked.connect(self.open_selected_attachment)
+
+        h_att_btn.addWidget(btn_add_att)
+        h_att_btn.addWidget(btn_open_att)
+
         att_lay.addWidget(self.list_att)
-        att_lay.addWidget(btn_add_att)
+        att_lay.addLayout(h_att_btn)
         self.load_attachments()
         tabs.addTab(tab_att, "مدارک و پیوست‌ها")
 
@@ -223,6 +254,7 @@ class StudentProfileDialog(QDialog):
         for a in atts:
             fname = os.path.basename(a["file_path"])
             item = QListWidgetItem(f"{fname} ({gregorian_to_shamsi(a['uploaded_at'])})")
+            item.setData(Qt.UserRole, a["file_path"])
             self.list_att.addItem(item)
 
     def upload_attachment(self):
@@ -230,6 +262,20 @@ class StudentProfileDialog(QDialog):
         if fpath:
             self.attachment_repo.add_attachment(self.student_id, fpath)
             self.load_attachments()
+
+    def open_attachment_item(self, item):
+        fpath = item.data(Qt.UserRole)
+        if fpath and os.path.exists(fpath):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(fpath))
+        else:
+            QMessageBox.warning(self, "خطا", "فایل مورد نظر در مسیر مربوطه یافت نشد.")
+
+    def open_selected_attachment(self):
+        curr = self.list_att.currentItem()
+        if curr:
+            self.open_attachment_item(curr)
+        else:
+            QMessageBox.warning(self, "خطا", "لطفاً یک فایل پیوست را انتخاب کنید.")
 
     def load_audit_trail(self):
         logs = self.audit_repo.get_logs_for_entity("student", self.student_id)
@@ -242,12 +288,13 @@ class StudentProfileDialog(QDialog):
 
 
 class StudentManagementWidget(QWidget):
-    """Main Student Management View."""
+    """Main Student Management View with Debt Column."""
     def __init__(self, db_path=None, parent=None):
         super().__init__(parent)
         self.db_path = db_path
         self.student_repo = StudentRepository(db_path)
         self.term_repo = TermRepository(db_path)
+        self.financial_engine = FinancialEngine(db_path)
         self.init_ui()
 
     def init_ui(self):
@@ -279,8 +326,8 @@ class StudentManagementWidget(QWidget):
         layout.addLayout(top_bar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(6)
-        self.table.setHorizontalHeaderLabels(["کد", "نام و نام خانوادگی", "نام پدر", "شماره تماس اصلی", "وضعیت", "عملیات"])
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(["کد", "نام و نام خانوادگی", "نام پدر", "شماره تماس اصلی", "بدهی معوق", "وضعیت", "عملیات"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.doubleClicked.connect(self.view_profile)
@@ -310,8 +357,15 @@ class StudentManagementWidget(QWidget):
             phone = s.get("primary_phone") or "-"
             self.table.setItem(row, 3, QTableWidgetItem(to_persian_digits(phone)))
 
+            fin = self.financial_engine.get_student_financial_summary(s["id"])
+            debt_amt = fin["total_pending_debt"]
+            debt_item = QTableWidgetItem(format_currency(debt_amt))
+            if debt_amt > 0:
+                debt_item.setForeground(Qt.red)
+            self.table.setItem(row, 4, debt_item)
+
             st_text = status_map.get(s["status"], s["status"])
-            self.table.setItem(row, 4, QTableWidgetItem(st_text))
+            self.table.setItem(row, 5, QTableWidgetItem(st_text))
 
             btn_panel = QWidget()
             btn_lay = QHBoxLayout(btn_panel)
@@ -327,7 +381,7 @@ class StudentManagementWidget(QWidget):
             btn_lay.addWidget(btn_edit)
             btn_lay.addWidget(btn_prof)
 
-            self.table.setCellWidget(row, 5, btn_panel)
+            self.table.setCellWidget(row, 6, btn_panel)
 
     def add_student(self):
         dlg = StudentDialog(self, db_path=self.db_path)
@@ -351,6 +405,75 @@ class StudentManagementWidget(QWidget):
             st_list = self.student_repo.search_students(query=code)
             if st_list:
                 self.view_profile_by_id(st_list[0]["id"])
+
+
+class StudentPickerDialog(QDialog):
+    """Search Picker Dialog showing details (Name, Code, Father Name, Phone) before adding to class roster."""
+    def __init__(self, db_path=None, parent=None):
+        super().__init__(parent)
+        self.db_path = db_path
+        self.student_repo = StudentRepository(db_path)
+        self.selected_student = None
+
+        self.setWindowTitle("جستجو و انتخاب دقیق دانش‌آموز")
+        self.resize(600, 400)
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+
+        top_h = QHBoxLayout()
+        self.txt_q = QLineEdit()
+        self.txt_q.setPlaceholderText("جستجوی نام، کد یا شماره تماس...")
+        self.txt_q.textChanged.connect(self.search)
+
+        top_h.addWidget(QLabel("عبارت جستجو:"))
+        top_h.addWidget(self.txt_q)
+        layout.addLayout(top_h)
+
+        self.tbl = QTableWidget()
+        self.tbl.setColumnCount(4)
+        self.tbl.setHorizontalHeaderLabels(["کد", "نام و نام خانوادگی", "نام پدر", "شماره تماس"])
+        self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl.setSelectionBehavior(QTableWidget.SelectRows)
+        self.tbl.doubleClicked.connect(self.confirm_selection)
+        layout.addWidget(self.tbl)
+
+        btn_box = QHBoxLayout()
+        btn_ok = QPushButton("انتخاب دانش‌آموز")
+        btn_ok.setProperty("accent", "true")
+        btn_ok.clicked.connect(self.confirm_selection)
+        btn_cancel = QPushButton("انصراف")
+        btn_cancel.clicked.connect(self.reject)
+
+        btn_box.addWidget(btn_ok)
+        btn_box.addWidget(btn_cancel)
+        layout.addLayout(btn_box)
+
+        self.search()
+
+    def search(self):
+        q = to_latin_digits(self.txt_q.text().strip())
+        results = self.student_repo.search_students(query=q)
+        self.tbl.setRowCount(len(results))
+        for r, s in enumerate(results):
+            self.tbl.setItem(r, 0, QTableWidgetItem(s["unique_code"]))
+            self.tbl.setItem(r, 1, QTableWidgetItem(f"{s['first_name']} {s['last_name']}"))
+            self.tbl.setItem(r, 2, QTableWidgetItem(s.get("father_name") or "-"))
+            self.tbl.setItem(r, 3, QTableWidgetItem(to_persian_digits(s.get("primary_phone") or "-")))
+
+            # store student dict
+            self.tbl.item(r, 0).setData(Qt.UserRole, s)
+
+    def confirm_selection(self):
+        curr_row = self.tbl.currentRow()
+        if curr_row >= 0:
+            item = self.tbl.item(curr_row, 0)
+            if item:
+                self.selected_student = item.data(Qt.UserRole)
+                self.accept()
+        else:
+            QMessageBox.warning(self, "خطا", "لطفاً یک دانش‌آموز را از لیست انتخاب کنید.")
 
 
 class TermClassManagementWidget(QWidget):
@@ -504,13 +627,11 @@ class TermClassManagementWidget(QWidget):
         vbox = QVBoxLayout(dlg)
 
         top_h = QHBoxLayout()
-        txt_st_search = QLineEdit()
-        txt_st_search.setPlaceholderText("جستجوی کد یا نام دانش‌آموز برای افزودن...")
-        btn_enroll = QPushButton("افزودن به کلاس")
+        btn_enroll = QPushButton("جستجو و افزودن دانش‌آموز به کلاس +")
         btn_enroll.setProperty("accent", "true")
 
-        top_h.addWidget(txt_st_search)
         top_h.addWidget(btn_enroll)
+        top_h.addStretch()
         vbox.addLayout(top_h)
 
         tbl = QTableWidget()
@@ -542,24 +663,17 @@ class TermClassManagementWidget(QWidget):
                 tbl.setCellWidget(row, 3, btn_pnl)
 
         def enroll_st():
-            q = to_latin_digits(txt_st_search.text().strip())
-            if not q:
-                return
-            st_list = self.student_repo.search_students(query=q)
-            if not st_list:
-                QMessageBox.warning(dlg, "خطا", "دانش‌آموزی یافت نشد.")
-                return
+            picker = StudentPickerDialog(db_path=self.db_path, parent=dlg)
+            if picker.exec() == QDialog.Accepted and picker.selected_student:
+                st = picker.selected_student
+                current_roster = self.class_repo.get_class_roster(class_id)
+                if len(current_roster) >= cls["capacity"]:
+                    QMessageBox.warning(dlg, "تکمیل ظرفیت", "ظرفیت کلاس تکمیل شده است!")
+                    return
 
-            st = st_list[0]
-            current_roster = self.class_repo.get_class_roster(class_id)
-            if len(current_roster) >= cls["capacity"]:
-                QMessageBox.warning(dlg, "تکمیل ظرفیت", "ظرفیت کلاس تکمیل شده است!")
-                return
-
-            self.class_repo.add_enrollment(class_id, st["id"])
-            txt_st_search.clear()
-            refresh_roster()
-            self.load_classes()
+                self.class_repo.add_enrollment(class_id, st["id"])
+                refresh_roster()
+                self.load_classes()
 
         def transfer_st(student_id):
             all_cls = self.class_repo.list_classes(status="active")

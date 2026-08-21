@@ -1,4 +1,5 @@
 import os
+import shutil
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QTextEdit,
@@ -29,13 +30,12 @@ class DashboardWidget(QWidget):
     def init_ui(self):
         layout = QVBoxLayout(self)
 
-        # KPI Cards Row
         kpi_layout = QHBoxLayout()
 
         self.card_students = self._create_card("دانش‌آموزان فعال", "0")
         self.card_income = self._create_card("درآمد کل ثبت‌شده", "0 تومان")
         self.card_debt = self._create_card("کل بدهی معوق", "0 تومان")
-        self.card_expenses = self._create_card("هزینه‌های ثبت‌شده", "0 تومان")
+        self.card_expenses = self._create_card("هزینه‌ها و برداشت‌ها", "0 تومان")
 
         kpi_layout.addWidget(self.card_students)
         kpi_layout.addWidget(self.card_income)
@@ -44,7 +44,6 @@ class DashboardWidget(QWidget):
 
         layout.addLayout(kpi_layout)
 
-        # Recent Payments Feed
         lbl_feed = QLabel("آخرین پرداخت‌های ثبت‌شده:")
         lbl_feed.setStyleSheet("font-size: 14px; font-weight: bold; margin-top: 10px;")
         layout.addWidget(lbl_feed)
@@ -106,7 +105,7 @@ class DashboardWidget(QWidget):
 
 
 class ExpensesWidget(QWidget):
-    """View for managing institute expenses."""
+    """View for managing institute expenses, insurance, and withdrawals."""
     def __init__(self, db_path=None, parent=None):
         super().__init__(parent)
         self.db_path = db_path
@@ -118,7 +117,7 @@ class ExpensesWidget(QWidget):
         layout = QVBoxLayout(self)
 
         top_bar = QHBoxLayout()
-        self.btn_add = QPushButton("ثبت هزینه جدید +")
+        self.btn_add = QPushButton("ثبت هزینه / برداشت جدید +")
         self.btn_add.setProperty("accent", "true")
         self.btn_add.clicked.connect(self.add_expense)
 
@@ -141,7 +140,15 @@ class ExpensesWidget(QWidget):
         unit = self.config_repo.get_setting("currency_unit", "toman")
         use_p = (self.config_repo.get_setting("numeral_format", "persian") == "persian")
 
-        cat_map = {"rent": "اجاره", "salary": "حقوق", "printing": "چاپ", "supplies": "ملزومات", "other": "سایر"}
+        cat_map = {
+            "rent": "اجاره",
+            "salary": "حقوق",
+            "printing": "چاپ",
+            "supplies": "ملزومات",
+            "insurance": "بیمه حوادث/تکمیلی",
+            "withdrawal": "برداشت مدیر/صندوق",
+            "other": "سایر"
+        }
 
         for row, e in enumerate(expenses):
             cat_text = cat_map.get(e["category"], e["category"])
@@ -152,7 +159,7 @@ class ExpensesWidget(QWidget):
 
     def add_expense(self):
         dlg = QDialog(self)
-        dlg.setWindowTitle("ثبت هزینه جدید")
+        dlg.setWindowTitle("ثبت هزینه یا برداشت جدید")
         form = QFormLayout(dlg)
 
         cmb_cat = QComboBox()
@@ -160,6 +167,8 @@ class ExpensesWidget(QWidget):
         cmb_cat.addItem("حقوق", "salary")
         cmb_cat.addItem("چاپ و تکثیر", "printing")
         cmb_cat.addItem("ملزومات و اداری", "supplies")
+        cmb_cat.addItem("بیمه دانش‌آموزی / تکمیلی", "insurance")
+        cmb_cat.addItem("برداشت مدیر / برداشت از صندوق", "withdrawal")
         cmb_cat.addItem("سایر", "other")
 
         spn_amount = QDoubleSpinBox()
@@ -278,7 +287,7 @@ class ReportsWidget(QWidget):
 
 
 class SettingsWidget(QWidget):
-    """View for POS configuration, Card destinations, numeral/currency toggles, Backups, and User Management."""
+    """View for POS configuration, Card destinations, numeral/currency toggles, Backups, and User Management with edit/delete controls."""
     def __init__(self, db_path=None, parent=None):
         super().__init__(parent)
         self.db_path = db_path
@@ -332,29 +341,53 @@ class SettingsWidget(QWidget):
         btn_save_config.clicked.connect(self.save_general_config)
         form.addRow(btn_save_config)
 
-        # POS and Cards Management
-        lbl_pos = QLabel("دستگاه‌های کارت‌خوان (POS) و حساب‌های کارت به کارت:")
-        lbl_pos.setStyleSheet("font-weight: bold; margin-top: 15px;")
-        form.addRow(lbl_pos)
-
-        h_btn = QHBoxLayout()
-        btn_add_pos = QPushButton("افزودن کارت‌خوان +")
-        btn_add_pos.clicked.connect(self.add_pos_dialog)
-
-        btn_add_card = QPushButton("افزودن حساب کارت به کارت +")
-        btn_add_card.clicked.connect(self.add_card_dialog)
-
         btn_backup = QPushButton("پشتیبان‌گیری از دیتابیس (Backup)")
         btn_backup.clicked.connect(self.backup_db)
+        form.addRow(btn_backup)
 
-        h_btn.addWidget(btn_add_pos)
-        h_btn.addWidget(btn_add_card)
-        h_btn.addWidget(btn_backup)
-        form.addRow(h_btn)
+        tabs.addTab(tab_general, "تنظیمات عمومی")
 
-        tabs.addTab(tab_general, "تنظیمات عمومی و کارت‌خوان")
+        # Tab 2: POS Devices Management
+        tab_pos = QWidget()
+        pos_lay = QVBoxLayout(tab_pos)
 
-        # Tab 2: User Accounts Management
+        pos_top = QHBoxLayout()
+        btn_add_pos = QPushButton("افزودن دستگاه کارت‌خوان +")
+        btn_add_pos.setProperty("accent", "true")
+        btn_add_pos.clicked.connect(self.add_pos_dialog)
+        pos_top.addWidget(btn_add_pos)
+        pos_top.addStretch()
+        pos_lay.addLayout(pos_top)
+
+        self.tbl_pos = QTableWidget()
+        self.tbl_pos.setColumnCount(3)
+        self.tbl_pos.setHorizontalHeaderLabels(["عنوان کارت‌خوان", "نام بانک", "عملیات"])
+        self.tbl_pos.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        pos_lay.addWidget(self.tbl_pos)
+
+        tabs.addTab(tab_pos, "مدیریت دستگاه‌های کارت‌خوان")
+
+        # Tab 3: Card Destinations Management
+        tab_cards = QWidget()
+        cards_lay = QVBoxLayout(tab_cards)
+
+        cards_top = QHBoxLayout()
+        btn_add_card = QPushButton("افزودن حساب کارت به کارت +")
+        btn_add_card.setProperty("accent", "true")
+        btn_add_card.clicked.connect(self.add_card_dialog)
+        cards_top.addWidget(btn_add_card)
+        cards_top.addStretch()
+        cards_lay.addLayout(cards_top)
+
+        self.tbl_cards = QTableWidget()
+        self.tbl_cards.setColumnCount(3)
+        self.tbl_cards.setHorizontalHeaderLabels(["شماره کارت", "نام دارنده حساب", "عملیات"])
+        self.tbl_cards.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        cards_lay.addWidget(self.tbl_cards)
+
+        tabs.addTab(tab_cards, "مدیریت حساب‌های کارت به کارت")
+
+        # Tab 4: User Accounts Management
         tab_users = QWidget()
         u_layout = QVBoxLayout(tab_users)
 
@@ -376,12 +409,38 @@ class SettingsWidget(QWidget):
 
         layout.addWidget(tabs)
         self.load_users()
+        self.load_pos_devices()
+        self.load_card_destinations()
 
     def save_general_config(self):
         self.config_repo.set_setting("numeral_format", self.cmb_numeral.currentData())
         self.config_repo.set_setting("currency_unit", self.cmb_currency.currentData())
         self.config_repo.set_setting("invoice_page_size", self.cmb_pagesize.currentData())
         QMessageBox.information(self, "موفقیت", "تنظیمات عمومی با موفقیت ذخیره شد.")
+
+    def load_pos_devices(self):
+        pos_list = self.config_repo.list_pos_devices()
+        self.tbl_pos.setRowCount(len(pos_list))
+        for r, p in enumerate(pos_list):
+            self.tbl_pos.setItem(r, 0, QTableWidgetItem(p["label"]))
+            self.tbl_pos.setItem(r, 1, QTableWidgetItem(p.get("bank_name") or "-"))
+
+            pnl = QWidget()
+            lay = QHBoxLayout(pnl)
+            lay.setContentsMargins(0, 0, 0, 0)
+
+            btn_edit = QPushButton("ویرایش")
+            btn_del = QPushButton("حذف")
+            pid = p["id"]
+            lbl = p["label"]
+            bank = p.get("bank_name", "")
+
+            btn_edit.clicked.connect(lambda _, id=pid, l=lbl, b=bank: self.edit_pos_dialog(id, l, b))
+            btn_del.clicked.connect(lambda _, id=pid: self.delete_pos(id))
+
+            lay.addWidget(btn_edit)
+            lay.addWidget(btn_del)
+            self.tbl_pos.setCellWidget(r, 2, pnl)
 
     def add_pos_dialog(self):
         dlg = QDialog(self)
@@ -398,9 +457,59 @@ class SettingsWidget(QWidget):
             if txt_label.text().strip():
                 self.config_repo.add_pos_device(txt_label.text().strip(), txt_bank.text().strip())
                 dlg.accept()
+                self.load_pos_devices()
 
         btn.clicked.connect(save)
         dlg.exec()
+
+    def edit_pos_dialog(self, pos_id, current_label, current_bank):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("ویرایش دستگاه کارت‌خوان")
+        form = QFormLayout(dlg)
+        txt_label = QLineEdit(current_label)
+        txt_bank = QLineEdit(current_bank)
+        form.addRow("عنوان کارت‌خوان:", txt_label)
+        form.addRow("نام بانک:", txt_bank)
+        btn = QPushButton("ذخیره ویرایش")
+        form.addRow(btn)
+
+        def save():
+            if txt_label.text().strip():
+                self.config_repo.update_pos_device(pos_id, txt_label.text().strip(), txt_bank.text().strip())
+                dlg.accept()
+                self.load_pos_devices()
+
+        btn.clicked.connect(save)
+        dlg.exec()
+
+    def delete_pos(self, pos_id):
+        if QMessageBox.question(self, "تأیید حذف", "آیا از حذف این دستگاه کارت‌خوان اطمینان دارید؟") == QMessageBox.Yes:
+            self.config_repo.delete_pos_device(pos_id)
+            self.load_pos_devices()
+
+    def load_card_destinations(self):
+        cards = self.config_repo.list_card_destinations()
+        self.tbl_cards.setRowCount(len(cards))
+        for r, c in enumerate(cards):
+            self.tbl_cards.setItem(r, 0, QTableWidgetItem(to_persian_digits(c["card_number"])))
+            self.tbl_cards.setItem(r, 1, QTableWidgetItem(c["owner_label"]))
+
+            pnl = QWidget()
+            lay = QHBoxLayout(pnl)
+            lay.setContentsMargins(0, 0, 0, 0)
+
+            btn_edit = QPushButton("ویرایش")
+            btn_del = QPushButton("حذف")
+            cid = c["id"]
+            num = c["card_number"]
+            owner = c["owner_label"]
+
+            btn_edit.clicked.connect(lambda _, id=cid, n=num, o=owner: self.edit_card_dialog(id, n, o))
+            btn_del.clicked.connect(lambda _, id=cid: self.delete_card(id))
+
+            lay.addWidget(btn_edit)
+            lay.addWidget(btn_del)
+            self.tbl_cards.setCellWidget(r, 2, pnl)
 
     def add_card_dialog(self):
         dlg = QDialog(self)
@@ -417,9 +526,35 @@ class SettingsWidget(QWidget):
             if txt_num.text().strip() and txt_owner.text().strip():
                 self.config_repo.add_card_destination(to_latin_digits(txt_num.text().strip()), txt_owner.text().strip())
                 dlg.accept()
+                self.load_card_destinations()
 
         btn.clicked.connect(save)
         dlg.exec()
+
+    def edit_card_dialog(self, card_id, current_num, current_owner):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("ویرایش حساب کارت به کارت")
+        form = QFormLayout(dlg)
+        txt_num = QLineEdit(current_num)
+        txt_owner = QLineEdit(current_owner)
+        form.addRow("شماره کارت:", txt_num)
+        form.addRow("نام دارنده حساب:", txt_owner)
+        btn = QPushButton("ذخیره ویرایش")
+        form.addRow(btn)
+
+        def save():
+            if txt_num.text().strip() and txt_owner.text().strip():
+                self.config_repo.update_card_destination(card_id, to_latin_digits(txt_num.text().strip()), txt_owner.text().strip())
+                dlg.accept()
+                self.load_card_destinations()
+
+        btn.clicked.connect(save)
+        dlg.exec()
+
+    def delete_card(self, card_id):
+        if QMessageBox.question(self, "تأیید حذف", "آیا از حذف این حساب کارت به کارت اطمینان دارید؟") == QMessageBox.Yes:
+            self.config_repo.delete_card_destination(card_id)
+            self.load_card_destinations()
 
     def backup_db(self):
         bm = BackupManager(self.db_path)
