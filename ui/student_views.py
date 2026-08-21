@@ -48,19 +48,18 @@ class StudentDialog(QDialog):
         self.cmb_status.addItem("انصرافی", "dropped_out")
         self.cmb_status.addItem("فارغ‌التحصیل", "graduated")
 
-        # Optional Direct Class Enrollment
         self.cmb_class = QComboBox()
         self.cmb_class.addItem("-- بدون ثبت‌نام اولیه در کلاس --", None)
         active_classes = self.class_repo.list_classes(status="active")
         for c in active_classes:
             self.cmb_class.addItem(f"{c['name']} ({c['code']}) - شهریه: {format_currency(c['tuition_fee'])}", c['id'])
 
-        # Optional Initial Registration Fee
         self.chk_reg_fee = QCheckBox("افزودن بدهی هزینه ثبت‌نام اولیه")
         self.spn_reg_fee = QDoubleSpinBox()
         self.spn_reg_fee.setRange(0, 100000000)
         self.spn_reg_fee.setValue(100000)
         self.spn_reg_fee.setSingleStep(10000)
+        self.spn_reg_fee.setDecimals(0)
         self.spn_reg_fee.setEnabled(False)
         self.chk_reg_fee.toggled.connect(lambda chk: self.spn_reg_fee.setEnabled(chk))
 
@@ -131,14 +130,11 @@ class StudentDialog(QDialog):
             phones_list = [{"phone_number": phone, "is_primary": True}] if phone else None
             self.student_id = self.student_repo.create_student(first_name, last_name, father_name, address, notes, phones_list, user_id=self.user_id)
 
-            # Direct class enrollment if chosen
             chosen_cid = self.cmb_class.currentData()
             if chosen_cid:
                 self.class_repo.add_enrollment(chosen_cid, self.student_id)
 
-            # Registration fee if checked
             if self.chk_reg_fee.isChecked() and self.spn_reg_fee.value() > 0:
-                # get payment type for reg fee
                 ptypes = self.config_repo.list_payment_types()
                 reg_pt_id = 1
                 for pt in ptypes:
@@ -159,7 +155,7 @@ class StudentDialog(QDialog):
 
 
 class StudentProfileDialog(QDialog):
-    """Full Student Profile Dialog with Financial Ledger & Export."""
+    """Full Student Profile Dialog with Distinct Paid vs Pending Debt Ledgers & Creditor/Debtor Status."""
     def __init__(self, student_id, db_path=None, parent=None):
         super().__init__(parent)
         self.student_id = student_id
@@ -172,7 +168,7 @@ class StudentProfileDialog(QDialog):
         self.attachment_repo = AttachmentRepository(db_path)
 
         self.setWindowTitle("شناسنامه کامل و تراز مالی دانش‌آموز")
-        self.resize(780, 560)
+        self.resize(800, 580)
         self.init_ui()
 
     def init_ui(self):
@@ -188,7 +184,7 @@ class StudentProfileDialog(QDialog):
 
         tabs = QTabWidget()
 
-        # Tab 1: Full Financial Ledger
+        # Tab 1: Separated Ledgers (Paid vs Pending) & Debtor/Creditor Status
         tab_summary = QWidget()
         sum_layout = QVBoxLayout(tab_summary)
         fin = self.financial_engine.get_student_financial_summary(self.student_id)
@@ -196,30 +192,54 @@ class StudentProfileDialog(QDialog):
         info_h = QHBoxLayout()
         info_h.addWidget(QLabel(f"کد: {student['unique_code']}"))
         info_h.addWidget(QLabel(f"نام پدر: {student.get('father_name', '-')}"))
-        info_h.addWidget(QLabel(f"پرداختی کل: {format_currency(fin['total_paid'])}"))
+        info_h.addWidget(QLabel(f"مجموع پرداختی‌های وصول‌شده: {format_currency(fin['total_paid'])}"))
 
-        lbl_debt = QLabel(f"بدهی معوق: {format_currency(fin['total_pending_debt'])}")
-        lbl_debt.setStyleSheet("color: #E74C3C; font-weight: bold; font-size: 13px;" if fin['total_pending_debt'] > 0 else "")
-        info_h.addWidget(lbl_debt)
+        debt_amt = fin['total_pending_debt']
+        if debt_amt > 0:
+            status_str = f"وضعیت حساب: بدهکار ({format_currency(debt_amt)})"
+            lbl_status = QLabel(status_str)
+            lbl_status.setStyleSheet("color: #E74C3C; font-weight: bold; font-size: 13px;")
+        elif debt_amt < 0:
+            status_str = f"وضعیت حساب: بستانکار ({format_currency(abs(debt_amt))})"
+            lbl_status = QLabel(status_str)
+            lbl_status.setStyleSheet("color: #2ECC71; font-weight: bold; font-size: 13px;")
+        else:
+            status_str = "وضعیت حساب: تسویه کامل (بدون بدهی)"
+            lbl_status = QLabel(status_str)
+            lbl_status.setStyleSheet("color: #27AE60; font-weight: bold; font-size: 13px;")
+
+        info_h.addWidget(lbl_status)
         sum_layout.addLayout(info_h)
 
-        lbl_tbl_title = QLabel("ریز صورت‌حساب و تراز مالی دقیق دانش‌آموز (شامل تمامی بدهی‌ها و پرداختی‌ها):")
-        lbl_tbl_title.setStyleSheet("font-weight: bold; margin-top: 5px;")
-        sum_layout.addWidget(lbl_tbl_title)
+        # 1. Pending Debts Table
+        lbl_debts = QLabel("۱. لیست بدهی‌های معوق و تسویه‌نشده دانش‌آموز (مستقل از پرداختی‌ها):")
+        lbl_debts.setStyleSheet("font-weight: bold; color: #C0392B; margin-top: 5px;")
+        sum_layout.addWidget(lbl_debts)
 
-        self.tbl_ledger = QTableWidget()
-        self.tbl_ledger.setColumnCount(6)
-        self.tbl_ledger.setHorizontalHeaderLabels(["تاریخ", "عنوان / بابت", "روش پرداخت", "مبلغ (تومان)", "وضعیت", "کد پیگیری"])
-        self.tbl_ledger.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        sum_layout.addWidget(self.tbl_ledger)
+        self.tbl_pending = QTableWidget()
+        self.tbl_pending.setColumnCount(4)
+        self.tbl_pending.setHorizontalHeaderLabels(["تاریخ ثبت بدهی", "شرح و بابت بدهی", "مبلغ بدهی (تومان)", "وضعیت"])
+        self.tbl_pending.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        sum_layout.addWidget(self.tbl_pending)
 
-        btn_export_st_ledger = QPushButton("خروجی اکسل تراز مالی این دانش‌آموز")
+        # 2. Paid Payments Table
+        lbl_paid = QLabel("۲. لیست پرداختی‌های وصول‌شده و فاکتورهای صادرشده (مستقل از بدهی‌ها):")
+        lbl_paid.setStyleSheet("font-weight: bold; color: #27AE60; margin-top: 5px;")
+        sum_layout.addWidget(lbl_paid)
+
+        self.tbl_paid = QTableWidget()
+        self.tbl_paid.setColumnCount(5)
+        self.tbl_paid.setHorizontalHeaderLabels(["تاریخ و زمان", "شرح و بابت", "روش پرداخت", "مبلغ پرداختی (تومان)", "کد پیگیری / فاکتور"])
+        self.tbl_paid.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        sum_layout.addWidget(self.tbl_paid)
+
+        btn_export_st_ledger = QPushButton("خروجی اکسل تراز مالی کامل این دانش‌آموز")
         btn_export_st_ledger.setProperty("accent", "true")
         btn_export_st_ledger.clicked.connect(self.export_student_ledger_excel)
         sum_layout.addWidget(btn_export_st_ledger, alignment=Qt.AlignRight)
 
-        self.load_financial_ledger()
-        tabs.addTab(tab_summary, "تراز مالی و ریز صورت‌حساب")
+        self.load_financial_ledgers()
+        tabs.addTab(tab_summary, "تراز مالی و بدهی‌ها")
 
         # Tab 2: Phone Numbers
         tab_phones = QWidget()
@@ -282,42 +302,51 @@ class StudentProfileDialog(QDialog):
         btn_close.clicked.connect(self.accept)
         layout.addWidget(btn_close, alignment=Qt.AlignLeft)
 
-    def load_financial_ledger(self):
-        payments = self.payment_repo.list_payments(student_id=self.student_id, limit=500)
-        self.tbl_ledger.setRowCount(len(payments))
-        method_map = {"cash": "نقد", "pos": "کارت‌خوان", "card_to_card": "کارت به کارت"}
+    def load_financial_ledgers(self):
+        all_records = self.payment_repo.list_payments(student_id=self.student_id, limit=500)
 
-        for r, p in enumerate(payments):
-            self.tbl_ledger.setItem(r, 0, QTableWidgetItem(gregorian_to_shamsi(p["paid_date"])))
+        pending_list = [p for p in all_records if p["status"] == "pending"]
+        paid_list = [p for p in all_records if p["status"] == "paid"]
 
-            desc = p.get("description") or p.get("payment_type_name", "تراکنش مالی")
-            self.tbl_ledger.setItem(r, 1, QTableWidgetItem(desc))
-            self.tbl_ledger.setItem(r, 2, QTableWidgetItem(method_map.get(p["method"], p["method"])))
+        # Populate Pending Debts Table
+        self.tbl_pending.setRowCount(len(pending_list))
+        for r, p in enumerate(pending_list):
+            self.tbl_pending.setItem(r, 0, QTableWidgetItem(gregorian_to_shamsi(p["paid_date"])))
+            desc = p.get("description") or p.get("payment_type_name", "بدهی آموزشی")
+            self.tbl_pending.setItem(r, 1, QTableWidgetItem(desc))
 
             amt_item = QTableWidgetItem(format_currency(p["amount"]))
-            if p["status"] == "pending":
-                amt_item.setForeground(Qt.red)
-            self.tbl_ledger.setItem(r, 3, amt_item)
+            amt_item.setForeground(Qt.red)
+            self.tbl_pending.setItem(r, 2, amt_item)
+            self.tbl_pending.setItem(r, 3, QTableWidgetItem("معوق / تسویه‌نشده"))
 
-            st_text = "پرداخت‌شده" if p["status"] == "paid" else "بدهی / تسویه‌نشده"
-            self.tbl_ledger.setItem(r, 4, QTableWidgetItem(st_text))
-            self.tbl_ledger.setItem(r, 5, QTableWidgetItem(p.get("bank_reference_number") or p.get("unique_code") or "-"))
+        # Populate Paid Payments Table
+        self.tbl_paid.setRowCount(len(paid_list))
+        method_map = {"cash": "نقد", "pos": "کارت‌خوان", "card_to_card": "کارت به کارت"}
+        for r, p in enumerate(paid_list):
+            self.tbl_paid.setItem(r, 0, QTableWidgetItem(gregorian_to_shamsi(p["paid_date"])))
+            desc = p.get("description") or p.get("payment_type_name", "پرداخت")
+            self.tbl_paid.setItem(r, 1, QTableWidgetItem(desc))
+            self.tbl_paid.setItem(r, 2, QTableWidgetItem(method_map.get(p["method"], p["method"])))
+            self.tbl_paid.setItem(r, 3, QTableWidgetItem(format_currency(p["amount"])))
+            self.tbl_paid.setItem(r, 4, QTableWidgetItem(p.get("bank_reference_number") or p.get("unique_code") or "-"))
 
     def export_student_ledger_excel(self):
         s = self.student_repo.get_by_id(self.student_id)
         fpath, _ = QFileDialog.getSaveFileName(self, "ذخیره تراز مالی دانش‌آموز", f"Taraz_{s['unique_code']}.xlsx", "Excel Files (*.xlsx)")
         if fpath:
-            payments = self.payment_repo.list_payments(student_id=self.student_id, limit=1000)
-            headers = ["تاریخ", "شرح و بابت", "روش پرداخت", "مبلغ (تومان)", "وضعیت پرداخت", "کد پیگیری / فاکتور"]
+            all_records = self.payment_repo.list_payments(student_id=self.student_id, limit=1000)
+            headers = ["تاریخ", "شرح و بابت", "نوع ثبت", "روش پرداخت", "مبلغ (تومان)", "وضعیت", "کد پیگیری / فاکتور"]
             rows = []
             method_map = {"cash": "نقد", "pos": "کارت‌خوان", "card_to_card": "کارت به کارت"}
-            for p in payments:
+            for p in all_records:
                 rows.append([
                     gregorian_to_shamsi(p.get("paid_date", "")),
                     p.get("description") or p.get("payment_type_name", ""),
+                    "بدهی ثبت‌شده" if p.get("status") == "pending" else "پرداختی وصول‌شده",
                     method_map.get(p.get("method"), p.get("method")),
                     p.get("amount", 0.0),
-                    "پرداخت‌شده" if p.get("status") == "paid" else "بدهی تسویه‌نشده",
+                    "پرداخت‌شده" if p.get("status") == "paid" else "معوق / تسویه‌نشده",
                     p.get("bank_reference_number") or p.get("unique_code") or "-"
                 ])
             ExcelExporter.export_table_to_excel(fpath, headers, rows, title=f"تراز مالی: {s['first_name']} {s['last_name']}")
@@ -704,6 +733,7 @@ class TermClassManagementWidget(QWidget):
 
         spn_book = QDoubleSpinBox()
         spn_book.setRange(0, 50000000)
+        spn_book.setValue(0)  # Optional, 0 by default
         spn_book.setSingleStep(10000)
         spn_book.setDecimals(0)
 
@@ -719,7 +749,7 @@ class TermClassManagementWidget(QWidget):
         layout.addRow("استاد:", txt_teacher)
         layout.addRow("ترم مربوطه:", cmb_term)
         layout.addRow("مبلغ شهریه ثابت (تومان):", spn_tuition)
-        layout.addRow("مبلغ کتاب (تومان):", spn_book)
+        layout.addRow("مبلغ کتاب (اختیاری):", spn_book)
         layout.addRow("عنوان سایر هزینه‌ها:", txt_other_title)
         layout.addRow("مبلغ سایر هزینه‌ها (تومان):", spn_other)
         layout.addRow("ظرفیت:", txt_cap)
