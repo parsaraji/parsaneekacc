@@ -301,25 +301,6 @@ class TermRepository:
         conn.close()
         return dict(row) if row else None
 
-    def get_stock(self, book_id: int) -> int:
-        conn = get_connection(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT stock_quantity FROM books WHERE id = ?", (book_id,))
-        row = cursor.fetchone()
-        conn.close()
-        return row[0] if row else 0
-
-    def reduce_stock(self, book_id: int, count: int = 1) -> int:
-        """Reduces book stock by count. Stock can become negative if confirmed."""
-        conn = get_connection(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("UPDATE books SET stock_quantity = stock_quantity - ? WHERE id = ?", (count, book_id))
-        cursor.execute("SELECT stock_quantity FROM books WHERE id = ?", (book_id,))
-        new_stock = cursor.fetchone()[0]
-        conn.commit()
-        conn.close()
-        return new_stock
-
     def list_terms(self) -> List[Dict[str, Any]]:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
@@ -918,6 +899,25 @@ class BookRepository:
         row = cursor.fetchone()
         conn.close()
         return dict(row) if row else None
+
+    def get_stock(self, book_id: int) -> int:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT stock_quantity FROM books WHERE id = ?", (book_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else 0
+
+    def reduce_stock(self, book_id: int, count: int = 1) -> int:
+        """Reduces book stock by count. Stock can become negative if confirmed."""
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE books SET stock_quantity = stock_quantity - ? WHERE id = ?", (count, book_id))
+        cursor.execute("SELECT stock_quantity FROM books WHERE id = ?", (book_id,))
+        new_stock = cursor.fetchone()[0]
+        conn.commit()
+        conn.close()
+        return new_stock
 
 
 class ExpenseRepository:

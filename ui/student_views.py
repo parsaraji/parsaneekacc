@@ -910,10 +910,10 @@ class TermClassManagementWidget(QWidget):
         tbl_books_sel.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
         b_repo = BookRepository(self.db_path)
-        all_books = b_repo.list_books()
         selected_class_book_ids = set()
 
         def load_class_books_tbl(q=""):
+            tbl_books_sel.setRowCount(0)
             current_bks = b_repo.list_books()
             filtered_bks = [bk for bk in current_bks if q.strip() in bk["title"]] if q.strip() else current_bks
             tbl_books_sel.setRowCount(len(filtered_bks))
@@ -1042,11 +1042,10 @@ class TermClassManagementWidget(QWidget):
                 b_repo = BookRepository(self.db_path)
                 all_inventory = b_repo.list_books()
 
-                # Filter out class books if description or fee indicates they belong to the class
                 class_book_fee = cls.get("book_fee", 0.0)
                 available_extra_items = [
                     b for b in all_inventory
-                    if not (class_book_fee > 0 and b["sale_price"] == class_book_fee and b["title"] in cls["name"])
+                    if not (class_book_fee > 0 and b["sale_price"] > 0 and b["sale_price"] == class_book_fee)
                 ]
 
                 if available_extra_items:
