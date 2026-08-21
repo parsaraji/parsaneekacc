@@ -723,7 +723,12 @@ class TermClassManagementWidget(QWidget):
         btn_add_book = QPushButton("افزودن کتاب جدید به انبار +")
         btn_add_book.setProperty("accent", "true")
         btn_add_book.clicked.connect(self.add_book_dialog)
+
+        btn_ref_books = QPushButton("بروزرسانی انبار")
+        btn_ref_books.clicked.connect(self.load_books)
+
         b_top.addWidget(btn_add_book)
+        b_top.addWidget(btn_ref_books)
         b_top.addStretch()
         b_layout.addLayout(b_top)
 
@@ -906,22 +911,26 @@ class TermClassManagementWidget(QWidget):
 
         b_repo = BookRepository(self.db_path)
         all_books = b_repo.list_books()
+        selected_class_book_ids = set()
 
         def load_class_books_tbl(q=""):
-            filtered_bks = [bk for bk in all_books if q.strip() in bk["title"]] if q.strip() else all_books
+            current_bks = b_repo.list_books()
+            filtered_bks = [bk for bk in current_bks if q.strip() in bk["title"]] if q.strip() else current_bks
             tbl_books_sel.setRowCount(len(filtered_bks))
-            tbl_books_sel.chk_list = getattr(tbl_books_sel, "chk_list", {})
 
             for r, bk in enumerate(filtered_bks):
                 tbl_books_sel.setItem(r, 0, QTableWidgetItem(bk["title"]))
                 tbl_books_sel.setItem(r, 1, QTableWidgetItem(format_currency(bk["sale_price"])))
 
                 bid = bk["id"]
-                if bid not in tbl_books_sel.chk_list:
-                    chk = QCheckBox("افزودن")
-                    tbl_books_sel.chk_list[bid] = (chk, bk)
-                else:
-                    chk = tbl_books_sel.chk_list[bid][0]
+                chk = QCheckBox("افزودن")
+                if bid in selected_class_book_ids:
+                    chk.setChecked(True)
+
+                def make_class_book_handler(book_id):
+                    return lambda state: selected_class_book_ids.add(book_id) if state else selected_class_book_ids.discard(book_id)
+
+                chk.toggled.connect(make_class_book_handler(bid))
 
                 chk_widget = QWidget()
                 chk_lay = QHBoxLayout(chk_widget)
@@ -958,7 +967,8 @@ class TermClassManagementWidget(QWidget):
                 except ValueError:
                     cap = 30
 
-                selected_books = [bk for chk, bk in getattr(tbl_books_sel, 'chk_list', {}).values() if chk.isChecked()]
+                all_books_map = {b["id"]: b for b in b_repo.list_books()}
+                selected_books = [all_books_map[bid] for bid in selected_class_book_ids if bid in all_books_map]
                 total_book_fee = sum(bk["sale_price"] for bk in selected_books)
 
                 self.class_repo.create_class(
@@ -1060,24 +1070,33 @@ class TermClassManagementWidget(QWidget):
                     tbl_inv.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
                     v_opt.addWidget(tbl_inv)
 
+                    selected_book_ids = set()
+
                     def load_inv_tbl(q=""):
                         current_books = b_repo.list_books()
                         filtered = [b for b in current_books if q.strip() in b["title"]] if q.strip() else current_books
                         tbl_inv.setRowCount(len(filtered))
-                        tbl_inv.chk_items = []
                         for r, bk in enumerate(filtered):
                             tbl_inv.setItem(r, 0, QTableWidgetItem(bk["title"]))
                             tbl_inv.setItem(r, 1, QTableWidgetItem(format_currency(bk["sale_price"])))
                             tbl_inv.setItem(r, 2, QTableWidgetItem(to_persian_digits(bk["stock_quantity"])))
 
                             chk = QCheckBox("افزودن")
+                            bid = bk["id"]
+                            if bid in selected_book_ids:
+                                chk.setChecked(True)
+
+                            def make_toggle_handler(book_id):
+                                return lambda state: selected_book_ids.add(book_id) if state else selected_book_ids.discard(book_id)
+
+                            chk.toggled.connect(make_toggle_handler(bid))
+
                             chk_w = QWidget()
                             c_lay = QHBoxLayout(chk_w)
                             c_lay.addWidget(chk)
                             c_lay.setAlignment(Qt.AlignCenter)
                             c_lay.setContentsMargins(0, 0, 0, 0)
                             tbl_inv.setCellWidget(r, 3, chk_w)
-                            tbl_inv.chk_items.append((chk, bk))
 
                     txt_srch.textChanged.connect(load_inv_tbl)
                     btn_ref_inv.clicked.connect(lambda: load_inv_tbl(txt_srch.text()))
@@ -1088,7 +1107,8 @@ class TermClassManagementWidget(QWidget):
                     v_opt.addWidget(btn_confirm)
 
                     def confirm_enroll_and_extra():
-                        chosen_items = [bk for chk, bk in getattr(tbl_inv, 'chk_items', []) if chk.isChecked()]
+                        all_books_map = {b["id"]: b for b in b_repo.list_books()}
+                        chosen_items = [all_books_map[bid] for bid in selected_book_ids if bid in all_books_map]
 
                         # Check out-of-stock items and prompt confirmation
                         out_of_stock = [bk for bk in chosen_items if bk["stock_quantity"] <= 0]
@@ -1103,11 +1123,19 @@ class TermClassManagementWidget(QWidget):
                         # Add extra item debts and reduce stock if items selected
                         if chosen_items:
                             p_repo = PaymentRepository(self.db_path)
+                            cfg_repo = ConfigRepository(self.db_path)
+                            ptypes = cfg_repo.list_payment_types()
+                            book_pt_id = 1
+                            for pt in ptypes:
+                                if "کتاب" in pt["name"]:
+                                    book_pt_id = pt["id"]
+                                    break
+
                             for bk in chosen_items:
                                 b_repo.reduce_stock(bk["id"], 1)
                                 p_repo.record_payment(
                                     student_id=st["id"],
-                                    payment_type_id=2, # Book
+                                    payment_type_id=book_pt_id,
                                     amount=bk["sale_price"],
                                     method="cash",
                                     term_id=cls["term_id"],
