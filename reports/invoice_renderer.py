@@ -9,11 +9,10 @@ class InvoiceTemplateRenderer:
 
     def render_batch_html(self, invoice_data_list: List[Dict[str, Any]]) -> str:
         """
-        Renders a multi-page HTML document containing up to 5 invoices per page.
-        Each row uses HTML <table> for 2-column side-by-side rendering in QTextDocument:
-          - Right/Wider column (68%): Student's Copy (رسید دانش‌آموز)
-          - Left/Narrower column (30%): Institute's Archive Stub (بایگانی آموزشگاه)
-        Rows are separated by horizontal dashed cut lines.
+        Renders a multi-page HTML document containing exactly 5 invoices per page.
+        Dimensioned precisely for print accuracy:
+          - A4 Portrait (210 x 297 mm): 5 equal rows (~53mm height each)
+          - A5 Portrait (148 x 210 mm): 5 equal rows (~38mm height each)
         """
         pages_html = []
         chunk_size = 5
@@ -22,11 +21,21 @@ class InvoiceTemplateRenderer:
             page_items = invoice_data_list[page_idx:page_idx + chunk_size]
             pages_html.append(self._render_single_page(page_items))
 
-        page_break_css = "<div style='page-break-after: always;'></div>"
+        page_break_css = "<div style='page-break-after: always; clear: both;'></div>"
         full_body = page_break_css.join(pages_html)
 
-        font_base = "11px" if self.page_size == "A4" else "9px"
-        row_height = "160px" if self.page_size == "A4" else "120px"
+        if self.page_size == "A5":
+            font_base = "8.5pt"
+            title_font = "9.5pt"
+            row_height = "38mm"
+            stamp_height = "16px"
+            page_css = "@page { size: A5 portrait; margin: 5mm; }"
+        else:
+            font_base = "10pt"
+            title_font = "11pt"
+            row_height = "52mm"
+            stamp_height = "24px"
+            page_css = "@page { size: A4 portrait; margin: 8mm; }"
 
         html_doc = f"""
         <!DOCTYPE html>
@@ -34,61 +43,72 @@ class InvoiceTemplateRenderer:
         <head>
         <meta charset="utf-8">
         <style>
+            {page_css}
+            * {{
+                box-sizing: border-box;
+            }}
             body {{
                 font-family: 'Shabnam', 'Tahoma', 'Arial', sans-serif;
                 margin: 0;
                 padding: 0;
                 font-size: {font_base};
-                color: #000000;
+                color: #111111;
                 background-color: #ffffff;
+                direction: rtl;
             }}
             .invoice-page {{
                 width: 100%;
+                margin: 0 auto;
             }}
             .invoice-table {{
                 width: 100%;
                 border-collapse: collapse;
-                margin-bottom: 2px;
+                table-layout: fixed;
             }}
             .invoice-row-td {{
                 height: {row_height};
-                border-bottom: 1px dashed #7f8c8d;
+                border-bottom: 1px dashed #555555;
                 vertical-align: top;
-                padding: 4px;
+                padding: 3mm 1mm;
             }}
             .student-td {{
-                width: 68%;
-                border-left: 1px dashed #7f8c8d;
-                padding-left: 8px;
+                width: 70%;
+                border-left: 1px dashed #555555;
+                padding-left: 4mm;
+                padding-right: 1mm;
                 vertical-align: top;
             }}
             .archive-td {{
                 width: 30%;
-                padding-right: 8px;
+                padding-right: 4mm;
+                padding-left: 1mm;
                 vertical-align: top;
             }}
-            .title {{
+            .header-title {{
                 font-weight: bold;
-                font-size: 1.1em;
-                color: #1a5276;
-                margin-bottom: 4px;
+                font-size: {title_font};
+                color: #0f3654;
+                margin-bottom: 2mm;
+                border-bottom: 1px solid #d0d7de;
+                padding-bottom: 1mm;
             }}
-            .inner-table {{
+            .data-table {{
                 width: 100%;
                 border-collapse: collapse;
             }}
-            .inner-table td {{
-                padding: 2px 4px;
-                vertical-align: top;
+            .data-table td {{
+                padding: 1.5mm 1mm;
+                vertical-align: middle;
             }}
             .stamp-box {{
-                margin-top: 6px;
-                border: 1px dotted #bdc3c7;
-                height: 30px;
+                margin-top: 2mm;
+                border: 1px dotted #888888;
+                height: {stamp_height};
                 text-align: center;
-                line-height: 30px;
-                color: #7f8c8d;
-                font-size: 0.85em;
+                line-height: {stamp_height};
+                color: #666666;
+                font-size: 0.8em;
+                border-radius: 3px;
             }}
         </style>
         </head>
@@ -109,7 +129,7 @@ class InvoiceTemplateRenderer:
             <table class="invoice-table">
                 <tr>
                     <td class="invoice-row-td">
-                        <table class="inner-table">
+                        <table class="data-table">
                             <tr>
                                 <td class="student-td">&nbsp;</td>
                                 <td class="archive-td">&nbsp;</td>
@@ -125,8 +145,8 @@ class InvoiceTemplateRenderer:
     def _render_single_row(self, data: Dict[str, Any]) -> str:
         inv_code = data.get("invoice_code") or data.get("unique_code", "")
         student_name = f"{data.get('first_name', '')} {data.get('last_name', '')}".strip() or data.get("student_name", "")
-        father_name = data.get("father_name", "-")
-        term_name = data.get("term_name", "-")
+        father_name = data.get("father_name") or "-"
+        term_name = data.get("term_name") or "-"
         payment_type = data.get("payment_type_name", "شهریه")
         amount = data.get("amount", 0.0)
         method = data.get("method", "cash")
@@ -140,43 +160,48 @@ class InvoiceTemplateRenderer:
 
         paid_date = gregorian_to_shamsi(data.get("paid_date", ""))
         paid_time = data.get("paid_time", "")
+        ref_code = data.get('card_tracking_code') or data.get('bank_reference_number') or '-'
 
         fmt_amount = format_currency(amount, self.currency_unit, self.use_persian_digits)
 
         if self.use_persian_digits:
             inv_code = to_persian_digits(inv_code)
             paid_time = to_persian_digits(paid_time)
+            ref_code = to_persian_digits(ref_code)
 
-        # Student Copy HTML
+        # Student Copy HTML (70% width)
         student_html = f"""
         <td class="student-td">
-            <div class="title">آموزشگاه پارسانیک - رسید پرداخت دانش‌آموز <span style="font-size:0.85em;">(کد رسید: {inv_code})</span></div>
-            <table class="inner-table">
+            <div class="header-title">
+                آموزشگاه پارسانیک - رسید پرداخت دانش‌آموز
+                <span style="font-size:0.85em; float:left;">شماره: {inv_code}</span>
+            </div>
+            <table class="data-table">
                 <tr>
-                    <td><b>نام دانش‌آموز:</b> {student_name}</td>
-                    <td><b>نام پدر:</b> {father_name}</td>
-                    <td><b>ترم:</b> {term_name}</td>
+                    <td style="width:36%;"><b>نام دانش‌آموز:</b> {student_name}</td>
+                    <td style="width:30%;"><b>نام پدر:</b> {father_name}</td>
+                    <td style="width:34%;"><b>ترم:</b> {term_name}</td>
                 </tr>
                 <tr>
                     <td><b>بابت:</b> {payment_type}</td>
-                    <td><b>روش پرداخت:</b> {method_str}</td>
+                    <td><b>روش:</b> {method_str}</td>
                     <td><b>مبلغ:</b> {fmt_amount}</td>
                 </tr>
                 <tr>
                     <td colspan="2"><b>تاریخ و زمان:</b> {paid_date} - {paid_time}</td>
-                    <td><b>کد پیگیری:</b> {to_persian_digits(data.get('card_tracking_code') or data.get('bank_reference_number') or '-')}</td>
+                    <td><b>کد پیگیری:</b> {ref_code}</td>
                 </tr>
             </table>
-            <div class="stamp-box">محل امضاء مدیر و مهر آموزشگاه</div>
+            <div class="stamp-box">محل امضاء مدیر و مهر آموزشگاه پارسانیک</div>
         </td>
         """
 
-        # Archive Stub HTML
+        # Archive Stub HTML (30% width)
         archive_html = f"""
         <td class="archive-td">
-            <div class="title" style="font-size:0.95em;">بایگانی آموزشگاه</div>
-            <table class="inner-table" style="font-size:0.9em;">
-                <tr><td><b>کد رسید:</b> {inv_code}</td></tr>
+            <div class="header-title" style="font-size:0.9em;">بایگانی آموزشگاه</div>
+            <table class="data-table" style="font-size:0.88em;">
+                <tr><td><b>شماره رسید:</b> {inv_code}</td></tr>
                 <tr><td><b>نام:</b> {student_name}</td></tr>
                 <tr><td><b>بابت:</b> {payment_type} ({term_name})</td></tr>
                 <tr><td><b>مبلغ:</b> {fmt_amount}</td></tr>
@@ -189,7 +214,7 @@ class InvoiceTemplateRenderer:
         <table class="invoice-table">
             <tr>
                 <td class="invoice-row-td">
-                    <table class="inner-table">
+                    <table class="data-table">
                         <tr>
                             {student_html}
                             {archive_html}

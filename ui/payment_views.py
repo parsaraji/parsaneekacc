@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QTextEdit,
     QDialog, QFormLayout, QMessageBox, QCheckBox, QDoubleSpinBox, QSpinBox, QTabWidget
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QMarginsF
 from PySide6.QtGui import QTextDocument, QPageLayout, QPageSize
 from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog
 
@@ -173,7 +173,6 @@ class RecordPaymentDialog(QDialog):
         if is_inst and inst_count > 1:
             schedule = self.financial_engine.generate_installment_schedule(final_amount, inst_count)
             for idx, inst in enumerate(schedule, 1):
-                # First installment marked paid, rest marked pending
                 st = "paid" if idx == 1 else "pending"
                 self.payment_repo.record_payment(
                     student_id=st_id,
@@ -402,14 +401,16 @@ class PaymentsAndInvoicingWidget(QWidget):
         )
         html_content = renderer.render_batch_html(items)
 
-        doc = QTextDocument()
-        doc.setHtml(html_content)
-
         printer = QPrinter(QPrinter.HighResolution)
-        if page_size_setting.upper() == "A5":
-            printer.setPageSize(QPageSize(QPageSize.A5))
-        else:
-            printer.setPageSize(QPageSize(QPageSize.A4))
+        page_sz = QPageSize(QPageSize.A5) if page_size_setting.upper() == "A5" else QPageSize(QPageSize.A4)
+        printer.setPageSize(page_sz)
+
+        margin_mm = 5.0 if page_size_setting.upper() == "A5" else 8.0
+        printer.setPageMargins(QMarginsF(margin_mm, margin_mm, margin_mm, margin_mm), QPageLayout.Millimeter)
+
+        doc = QTextDocument()
+        doc.setPageSize(printer.pageLayout().paintRect(QPageLayout.Point).size())
+        doc.setHtml(html_content)
 
         preview = QPrintPreviewDialog(printer, self)
         preview.paintRequested.connect(lambda p: doc.print_(p))
