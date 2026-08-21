@@ -368,9 +368,23 @@ class ReportsWidget(QWidget):
         self.load_term_debtors()
 
     def refresh_all_reports(self):
+        self.refresh_terms_dropdown()
         self.load_data()
         self.load_pnl_statement()
         self.load_term_debtors()
+
+    def refresh_terms_dropdown(self):
+        curr_tid = self.cmb_terms.currentData()
+        self.cmb_terms.blockSignals(True)
+        self.cmb_terms.clear()
+        terms = self.term_repo.list_terms()
+        for t in terms:
+            self.cmb_terms.addItem(t["name"], t["id"])
+        if curr_tid:
+            idx = self.cmb_terms.findData(curr_tid)
+            if idx >= 0:
+                self.cmb_terms.setCurrentIndex(idx)
+        self.cmb_terms.blockSignals(False)
 
     def load_data(self):
         payments = self.payment_repo.list_payments(limit=500)
@@ -397,6 +411,7 @@ class ReportsWidget(QWidget):
             ("درآمد حاصل از دستگاه کارت‌خوان (POS)", fin["income_pos"]),
             ("درآمد حاصل از واریز کارت به کارت", fin["income_card_to_card"]),
             ("مجموع کل درآمدهای وصول‌شده", fin["total_income"]),
+            ("فروش کل کتاب‌ها", fin.get("total_book_sales", 0.0)),
             ("کل هزینه‌ها و برداشت‌های ثبت‌شده", fin["total_expenses"]),
             ("سود / زیان خالص آموزشگاه", fin["net_income"]),
             ("مجموع بدهی‌های معوق قابل وصول دانش‌آموزان", fin["total_outstanding_debt"])
@@ -411,9 +426,14 @@ class ReportsWidget(QWidget):
             self.tbl_pnl.setItem(r, 1, item_val)
 
     def load_term_debtors(self):
+        if self.cmb_terms.count() == 0:
+            self.refresh_terms_dropdown()
+
         tid = self.cmb_terms.currentData()
         if not tid:
+            self.tbl_debtors.setRowCount(0)
             return
+
         debtors = self.payment_repo.get_term_debtors(tid)
         self.tbl_debtors.setRowCount(len(debtors))
         for r, d in enumerate(debtors):
