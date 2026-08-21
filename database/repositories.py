@@ -434,7 +434,6 @@ class ClassRepository:
 
         p_repo = PaymentRepository(self.db_path)
 
-        # Commit existing transaction before calling record_payment on separate connection
         conn.commit()
 
         if cls["tuition_fee"] > 0:
@@ -616,6 +615,97 @@ class PaymentRepository:
             )
             created_ids.append(pid)
         return created_ids
+
+    def settle_and_record_transaction(self, student_id: int, debt_settlements: List[Dict[str, Any]],
+                                       new_line_items: List[Dict[str, Any]], method: str,
+                                       term_id: Optional[int] = None, pos_device_id: Optional[int] = None,
+                                       card_destination_id: Optional[int] = None, bank_reference_number: str = "",
+                                       card_tracking_code: str = "", description: str = "",
+                                       recorded_by_user_id: Optional[int] = None) -> int:
+        """
+        Executes multi-debt settlements and new line-item charges inside a SINGLE atomic transaction.
+        When a pending debt is fully settled, the pending debt record is removed or reduced, and
+        ONE consolidated paid payment record is issued with ONE invoice. This guarantees zero double-counting
+        and zero database locks.
+        """
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+
+        now_date = datetime.now().strftime("%Y-%m-%d")
+        now_time = datetime.now().strftime("%H:%M:%S")
+
+        total_settled_amount = 0.0
+        settlement_descriptions = []
+
+        # 1. Process Debt Settlements atomically without double-counting
+        for debt_item in debt_settlements:
+            debt_id = debt_item["debt_id"]
+            pay_amt = debt_item["pay_amount"]
+            debt_total = debt_item["total_debt_amount"]
+            d_desc = debt_item.get("description", "بدهی")
+
+            if pay_amt <= 0:
+                continue
+
+            total_settled_amount += pay_amt
+
+            if pay_amt >= debt_total:
+                # Full settlement: remove pending debt record to prevent double-counting in SUM queries
+                cursor.execute("DELETE FROM payments WHERE id = ?", (debt_id,))
+                settlement_descriptions.append(f"تسویه کامل: {d_desc}")
+            else:
+                # Partial settlement: reduce remaining pending debt
+                rem_debt = debt_total - pay_amt
+                cursor.execute("UPDATE payments SET amount = ? WHERE id = ?", (rem_debt, debt_id))
+                settlement_descriptions.append(f"تسویه بخشی از ({d_desc}): {pay_amt}")
+
+        # 2. Process New Paid Items
+        new_items_amount = 0.0
+        for nitem in new_line_items:
+            new_items_amount += nitem["amount"]
+            settlement_descriptions.append(f"{nitem.get('name_label', 'آیتم جدید')}: {nitem['amount']}")
+
+        total_paid_overall = total_settled_amount + new_items_amount
+
+        if total_paid_overall <= 0:
+            conn.close()
+            return 0
+
+        # 3. Create ONE consolidated payment record for the exact total paid amount (22 columns)
+        p_code = self._generate_payment_code(cursor)
+        combined_desc = f"{description} | " + " - ".join(settlement_descriptions) if description else " - ".join(settlement_descriptions)
+
+        cursor.execute("SELECT id FROM payment_types WHERE name = 'شهریه'")
+        r_pt = cursor.fetchone()
+        pt_id = r_pt["id"] if r_pt else 1
+
+        cursor.execute(
+            """INSERT INTO payments (
+                unique_code, student_id, term_id, payment_type_id, amount,
+                discount_percent, discount_amount, late_fee_amount, method,
+                pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
+                description, due_date, paid_date, paid_time, is_installment,
+                installment_no, installment_total, status, recorded_by_user_id
+            ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 'paid', ?)""",
+            (
+                p_code, student_id, term_id, pt_id, total_paid_overall, method,
+                pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
+                combined_desc, now_date, now_date, now_time, recorded_by_user_id
+            )
+        )
+        final_payment_id = cursor.lastrowid
+
+        # 4. Issue ONE consolidated invoice
+        inv_code = self._generate_invoice_code(cursor)
+        issued_at = f"{now_date} {now_time}"
+        cursor.execute(
+            "INSERT INTO invoices (unique_code, payment_id, student_id, issued_at, printed) VALUES (?, ?, ?, ?, 0)",
+            (inv_code, final_payment_id, student_id, issued_at)
+        )
+
+        conn.commit()
+        conn.close()
+        return final_payment_id
 
     def list_payments(self, student_id: Optional[int] = None, term_id: Optional[int] = None,
                       date_from: str = "", date_to: str = "", status: str = "",

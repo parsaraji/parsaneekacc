@@ -16,7 +16,7 @@ from reports.invoice_renderer import InvoiceTemplateRenderer
 from ui.student_views import StudentPickerDialog
 
 class RecordPaymentDialog(QDialog):
-    """Dialog for recording single/multi-category payments, debt charges, or settling existing pending debts (full/partial)."""
+    """Dialog for recording multi-debt settlements and new line items in a single card swipe or cash transaction."""
     def __init__(self, db_path=None, student_id=None, parent=None):
         super().__init__(parent)
         self.db_path = db_path
@@ -27,11 +27,11 @@ class RecordPaymentDialog(QDialog):
         self.config_repo = ConfigRepository(db_path)
         self.financial_engine = FinancialEngine(db_path)
 
-        self.line_items = []
+        self.new_line_items = []
         self.pending_debts = []
 
-        self.setWindowTitle("ثبت تراکنش پرداخت، تسویه بدهی یا بدهی جدید")
-        self.resize(650, 660)
+        self.setWindowTitle("ثبت تراکنش دریافتی، تسویه بدهی‌ها و بابت جدید")
+        self.resize(700, 680)
         self.init_ui()
 
     def init_ui(self):
@@ -65,37 +65,21 @@ class RecordPaymentDialog(QDialog):
 
         form.addRow("دانش‌آموز:", st_box)
         form.addRow("ترم:", self.cmb_term)
-
-        # Mode Selection: New Charges vs Settle Existing Debt
-        self.cmb_mode = QComboBox()
-        self.cmb_mode.addItem("تسویه بدهی معوق قبلی دانش‌آموز (انتخاب از لیست)", "settle_debt")
-        self.cmb_mode.addItem("ثبت دریافت / بدهی جدید (شهریه، کتاب، کلاس خصوصی و...)", "new_items")
-        self.cmb_mode.currentIndexChanged.connect(self.on_mode_changed)
-
-        form.addRow("نوع تراکنش:", self.cmb_mode)
         layout.addLayout(form)
 
-        # 1. Existing Debts Group (Settle Mode)
-        self.box_debts = QGroupBox("بدهی‌های معوق قابل تسویه دانش‌آموز انتخاب‌شده")
+        # 1. Existing Debts Group (Table with editable settlement amounts)
+        self.box_debts = QGroupBox("۱. تسویه بدهی‌های معوق دانش‌آموز (امکان پرداخت کامل یا بخشی از هر بدهی)")
         v_debts = QVBoxLayout(self.box_debts)
 
-        self.cmb_debt_item = QComboBox()
-        self.cmb_debt_item.currentIndexChanged.connect(self.on_debt_item_selected)
-
-        self.spn_pay_amount = QDoubleSpinBox()
-        self.spn_pay_amount.setRange(0, 1000000000)
-        self.spn_pay_amount.setSingleStep(50000)
-        self.spn_pay_amount.setDecimals(0)
-
-        form_debt = QFormLayout()
-        form_debt.addRow("انتخاب آیتم بدهی:", self.cmb_debt_item)
-        form_debt.addRow("مبلغ واریزی فعلی (تولید فاکتور):", self.spn_pay_amount)
-
-        v_debts.addLayout(form_debt)
+        self.tbl_debts = QTableWidget()
+        self.tbl_debts.setColumnCount(4)
+        self.tbl_debts.setHorizontalHeaderLabels(["عنوان / شرح بدهی", "کل بدهی (تومان)", "مبلغ واریزی الان (تومان)", "انتخاب"])
+        self.tbl_debts.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        v_debts.addWidget(self.tbl_debts)
         layout.addWidget(self.box_debts)
 
         # 2. Multi-item Charges Group (New Items Mode)
-        self.box_items = QGroupBox("آیتم‌های دریافتی / بدهی جدید (شامل شهریه، کتاب، کلاس خصوصی و...)")
+        self.box_items = QGroupBox("۲. افزودن بابت جدید در همین کارت کشیدن / دریافت (مانند ثبت‌نام اولیه، کتاب جدید، کلاس خصوصی)")
         v_items = QVBoxLayout(self.box_items)
 
         self.tbl_items = QTableWidget()
@@ -115,8 +99,8 @@ class RecordPaymentDialog(QDialog):
         self.spn_item_amount.setSingleStep(50000)
         self.spn_item_amount.setDecimals(0)
 
-        btn_add_line = QPushButton("افزودن آیتم +")
-        btn_add_line.clicked.connect(self.add_line_item)
+        btn_add_line = QPushButton("افزودن آیتم جدید +")
+        btn_add_line.clicked.connect(self.add_new_line_item)
 
         add_item_h.addWidget(self.cmb_item_type, 2)
         add_item_h.addWidget(self.spn_item_amount, 2)
@@ -128,13 +112,9 @@ class RecordPaymentDialog(QDialog):
         # Payment Status, Method and Details
         form_pay = QFormLayout()
 
-        self.cmb_status = QComboBox()
-        self.cmb_status.addItem("پرداخت‌شده (تکمیل)", "paid")
-        self.cmb_status.addItem("معوق / ثبت به عنوان بدهی جدید دانش‌آموز", "pending")
-
         self.cmb_method = QComboBox()
-        self.cmb_method.addItem("نقد", "cash")
         self.cmb_method.addItem("کارت‌خوان (POS)", "pos")
+        self.cmb_method.addItem("نقد", "cash")
         self.cmb_method.addItem("کارت به کارت", "card_to_card")
         self.cmb_method.currentIndexChanged.connect(self.on_method_changed)
 
@@ -153,23 +133,22 @@ class RecordPaymentDialog(QDialog):
 
         self.txt_desc = QLineEdit()
 
-        form_pay.addRow("وضعیت دریافت:", self.cmb_status)
         form_pay.addRow("روش پرداخت:", self.cmb_method)
         form_pay.addRow("دستگاه کارت‌خوان:", self.cmb_pos)
         form_pay.addRow("حساب کارت به کارت:", self.cmb_card)
         form_pay.addRow("شماره پیگیری/فیش:", self.txt_ref_code)
-        form_pay.addRow("توضیحات:", self.txt_desc)
+        form_pay.addRow("توضیحات کلی:", self.txt_desc)
 
         layout.addLayout(form_pay)
 
-        # Total Label
-        self.lbl_total_sum = QLabel("مجموع کل قابل پرداخت: ۰ تومان")
-        self.lbl_total_sum.setStyleSheet("font-size: 13px; font-weight: bold; color: #2980B9; margin-top: 5px;")
+        # Total Swipe / Payment Label
+        self.lbl_total_sum = QLabel("مجموع کل کارت کشیدن / واریزی این فاکتور: ۰ تومان")
+        self.lbl_total_sum.setStyleSheet("font-size: 14px; font-weight: bold; color: #27AE60; margin-top: 5px;")
         layout.addWidget(self.lbl_total_sum)
 
         # Buttons
         btn_box = QHBoxLayout()
-        self.btn_save = QPushButton("ثبت و صدور فاکتور")
+        self.btn_save = QPushButton("ثبت نهایی تراکنش و صدور تک‌فاکتور")
         self.btn_save.setProperty("accent", "true")
         self.btn_save.clicked.connect(self.save_payment)
 
@@ -181,7 +160,6 @@ class RecordPaymentDialog(QDialog):
         layout.addLayout(btn_box)
 
         self.on_student_changed()
-        self.on_mode_changed()
         self.on_method_changed()
 
     def reload_students(self):
@@ -200,41 +178,43 @@ class RecordPaymentDialog(QDialog):
 
     def on_student_changed(self):
         st_id = self.cmb_student.currentData()
-        self.cmb_debt_item.clear()
         self.pending_debts = []
         if st_id:
             all_p = self.payment_repo.list_payments(student_id=st_id, limit=300)
             self.pending_debts = [p for p in all_p if p["status"] == "pending"]
-            for d in self.pending_debts:
-                desc = d.get("description") or d.get("payment_type_name", "بدهی")
-                self.cmb_debt_item.addItem(f"{desc} - {format_currency(d['amount'])}", d)
 
-        self.on_debt_item_selected()
+        self.refresh_debts_table()
 
-    def on_debt_item_selected(self):
-        d_data = self.cmb_debt_item.currentData()
-        if d_data:
-            self.spn_pay_amount.setValue(d_data["amount"])
-            self.lbl_total_sum.setText(f"مجموع کل قابل پرداخت: {format_currency(d_data['amount'])}")
-        else:
-            self.spn_pay_amount.setValue(0)
-            self.lbl_total_sum.setText("مجموع کل قابل پرداخت: ۰ تومان")
+    def refresh_debts_table(self):
+        self.tbl_debts.setRowCount(len(self.pending_debts))
+        for r, d in enumerate(self.pending_debts):
+            desc = d.get("description") or d.get("payment_type_name", "بدهی")
+            self.tbl_debts.setItem(r, 0, QTableWidgetItem(desc))
+            self.tbl_debts.setItem(r, 1, QTableWidgetItem(format_currency(d["amount"])))
 
-    def on_mode_changed(self):
-        mode = self.cmb_mode.currentData()
-        if mode == "settle_debt":
-            self.box_debts.show()
-            self.box_items.hide()
-            self.cmb_status.setCurrentIndex(0) # paid
-            self.cmb_status.setEnabled(False)
-            self.on_debt_item_selected()
-        else:
-            self.box_debts.hide()
-            self.box_items.show()
-            self.cmb_status.setEnabled(True)
-            self.refresh_items_table()
+            spn = QDoubleSpinBox()
+            spn.setRange(0, d["amount"])
+            spn.setValue(d["amount"]) # default full settlement
+            spn.setSingleStep(50000)
+            spn.setDecimals(0)
+            spn.valueChanged.connect(self.recalculate_total_payment)
 
-    def add_line_item(self):
+            chk = QCheckBox()
+            chk.setChecked(True) # checked by default
+            chk.toggled.connect(self.recalculate_total_payment)
+
+            self.tbl_debts.setCellWidget(r, 2, spn)
+
+            chk_widget = QWidget()
+            chk_lay = QHBoxLayout(chk_widget)
+            chk_lay.addWidget(chk)
+            chk_lay.setAlignment(Qt.AlignCenter)
+            chk_lay.setContentsMargins(0, 0, 0, 0)
+            self.tbl_debts.setCellWidget(r, 3, chk_widget)
+
+        self.recalculate_total_payment()
+
+    def add_new_line_item(self):
         amt = self.spn_item_amount.value()
         if amt <= 0:
             QMessageBox.warning(self, "خطا", "لطفاً مبلغ معتبر وارد کنید.")
@@ -243,33 +223,46 @@ class RecordPaymentDialog(QDialog):
         pt_id = self.cmb_item_type.currentData()
         pt_name = self.cmb_item_type.currentText()
 
-        self.line_items.append({
+        self.new_line_items.append({
             "payment_type_id": pt_id,
             "name_label": pt_name,
             "amount": amt
         })
-        self.refresh_items_table()
+        self.refresh_new_items_table()
 
-    def refresh_items_table(self):
-        self.tbl_items.setRowCount(len(self.line_items))
-        total = 0.0
-        for r, item in enumerate(self.line_items):
+    def refresh_new_items_table(self):
+        self.tbl_items.setRowCount(len(self.new_line_items))
+        for r, item in enumerate(self.new_line_items):
             self.tbl_items.setItem(r, 0, QTableWidgetItem(item["name_label"]))
             self.tbl_items.setItem(r, 1, QTableWidgetItem(format_currency(item["amount"])))
-            total += item["amount"]
 
             btn_del = QPushButton("حذف")
             idx = r
-            btn_del.clicked.connect(lambda _, i=idx: self.remove_line_item(i))
+            btn_del.clicked.connect(lambda _, i=idx: self.remove_new_line_item(i))
             self.tbl_items.setCellWidget(r, 2, btn_del)
 
-        if self.cmb_mode.currentData() == "new_items":
-            self.lbl_total_sum.setText(f"مجموع کل قابل پرداخت: {format_currency(total)}")
+        self.recalculate_total_payment()
 
-    def remove_line_item(self, index: int):
-        if 0 <= index < len(self.line_items):
-            self.line_items.pop(index)
-            self.refresh_items_table()
+    def remove_new_line_item(self, index: int):
+        if 0 <= index < len(self.new_line_items):
+            self.new_line_items.pop(index)
+            self.refresh_new_items_table()
+
+    def recalculate_total_payment(self):
+        total_settled_debts = 0.0
+        for r in range(self.tbl_debts.rowCount()):
+            chk_widget = self.tbl_debts.cellWidget(r, 3)
+            if chk_widget:
+                chk = chk_widget.findChild(QCheckBox)
+                if chk and chk.isChecked():
+                    spn = self.tbl_debts.cellWidget(r, 2)
+                    if spn:
+                        total_settled_debts += spn.value()
+
+        total_new_items = sum(item["amount"] for item in self.new_line_items)
+        grand_total = total_settled_debts + total_new_items
+
+        self.lbl_total_sum.setText(f"مجموع کل کارت کشیدن / واریزی این فاکتور: {format_currency(grand_total)}")
 
     def on_method_changed(self):
         method = self.cmb_method.currentData()
@@ -282,89 +275,47 @@ class RecordPaymentDialog(QDialog):
             QMessageBox.warning(self, "خطا", "لطفاً دانش‌آموز را انتخاب کنید.")
             return
 
-        mode = self.cmb_mode.currentData()
+        debt_settlements = []
+        for r in range(self.tbl_debts.rowCount()):
+            chk_widget = self.tbl_debts.cellWidget(r, 3)
+            if chk_widget:
+                chk = chk_widget.findChild(QCheckBox)
+                if chk and chk.isChecked():
+                    spn = self.tbl_debts.cellWidget(r, 2)
+                    pay_val = spn.value() if spn else 0
+                    if pay_val > 0 and r < len(self.pending_debts):
+                        d_info = self.pending_debts[r]
+                        debt_settlements.append({
+                            "debt_id": d_info["id"],
+                            "pay_amount": pay_val,
+                            "total_debt_amount": d_info["amount"],
+                            "description": d_info.get("description") or d_info.get("payment_type_name", "بدهی")
+                        })
+
+        if not debt_settlements and not self.new_line_items:
+            QMessageBox.warning(self, "خطا", "هیچ بدهی برای تسویه انتخاب نشده و هیچ بابت جدیدی افزوده‌نشده است.")
+            return
+
         method = self.cmb_method.currentData()
         pos_id = self.cmb_pos.currentData() if method == "pos" else None
         card_id = self.cmb_card.currentData() if method == "card_to_card" else None
         ref_code = to_latin_digits(self.txt_ref_code.text().strip())
 
-        if mode == "settle_debt":
-            debt_data = self.cmb_debt_item.currentData()
-            if not debt_data:
-                QMessageBox.warning(self, "خطا", "هیچ بدهی معوقی برای تسویه انتخاب نشده است.")
-                return
+        # Atomic transaction call - zero database lock
+        res_pid = self.payment_repo.settle_and_record_transaction(
+            student_id=st_id,
+            debt_settlements=debt_settlements,
+            new_line_items=self.new_line_items,
+            method=method,
+            term_id=self.cmb_term.currentData(),
+            pos_device_id=pos_id,
+            card_destination_id=card_id,
+            bank_reference_number=ref_code,
+            card_tracking_code=ref_code,
+            description=self.txt_desc.text().strip()
+        )
 
-            pay_amt = self.spn_pay_amount.value()
-            if pay_amt <= 0:
-                QMessageBox.warning(self, "خطا", "مبلغ واریزی باید بزرگتر از صفر باشد.")
-                return
-
-            debt_total = debt_data["amount"]
-            if pay_amt > debt_total:
-                QMessageBox.warning(self, "خطا", f"مبلغ واریزی نمی‌تواند از کل بدهی ({format_currency(debt_total)}) بیشتر باشد.")
-                return
-
-            import sqlite3
-            from database.db import get_connection
-            conn = get_connection(self.db_path)
-            cursor = conn.cursor()
-
-            today_greg = datetime.now().strftime("%Y-%m-%d")
-
-            if pay_amt == debt_total:
-                # Full debt settlement -> update existing debt entry to paid
-                cursor.execute(
-                    """UPDATE payments SET status = 'paid', method = ?, pos_device_id = ?, card_destination_id = ?,
-                       bank_reference_number = ?, card_tracking_code = ?, description = ?, paid_date = ?
-                       WHERE id = ?""",
-                    (method, pos_id, card_id, ref_code, ref_code,
-                     f"تسویه کامل بدهی: {debt_data.get('description', '')}",
-                     today_greg, debt_data["id"])
-                )
-            else:
-                # Partial debt settlement -> reduce pending debt and record paid entry
-                rem_debt = debt_total - pay_amt
-                cursor.execute("UPDATE payments SET amount = ? WHERE id = ?", (rem_debt, debt_data["id"]))
-
-                self.payment_repo.record_payment(
-                    student_id=st_id,
-                    payment_type_id=debt_data["payment_type_id"],
-                    amount=pay_amt,
-                    method=method,
-                    term_id=debt_data.get("term_id"),
-                    pos_device_id=pos_id,
-                    card_destination_id=card_id,
-                    bank_reference_number=ref_code,
-                    card_tracking_code=ref_code,
-                    description=f"تسویه بخشی از بدهی (مانده بدهی: {format_currency(rem_debt)}): {debt_data.get('description', '')}",
-                    status="paid",
-                    create_invoice=True
-                )
-
-            conn.commit()
-            conn.close()
-
-        else:
-            # New items mode
-            if not self.line_items:
-                QMessageBox.warning(self, "خطا", "لطفاً حداقل یک آیتم پرداختی/بدهی به لیست اضافه کنید.")
-                return
-
-            status = self.cmb_status.currentData()
-            self.payment_repo.record_multi_item_payment(
-                student_id=st_id,
-                line_items=self.line_items,
-                method=method,
-                term_id=self.cmb_term.currentData(),
-                pos_device_id=pos_id,
-                card_destination_id=card_id,
-                bank_reference_number=ref_code,
-                card_tracking_code=ref_code,
-                description=self.txt_desc.text().strip(),
-                status=status
-            )
-
-        QMessageBox.information(self, "موفقیت", "تراکنش با موفقیت ثبت گردید.")
+        QMessageBox.information(self, "موفقیت", "تراکنش مالی با موفقیت ثبت و تک‌فاکتور صادر گردید.")
         self.accept()
 
 
