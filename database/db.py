@@ -164,6 +164,14 @@ def init_db(db_path: Optional[str] = None) -> None:
         stock_quantity INTEGER NOT NULL DEFAULT 0
     );
 
+    CREATE TABLE IF NOT EXISTS class_books (
+        class_id INTEGER NOT NULL,
+        book_id INTEGER NOT NULL,
+        PRIMARY KEY (class_id, book_id),
+        FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
+        FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS expenses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         category TEXT NOT NULL,

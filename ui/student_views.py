@@ -733,8 +733,8 @@ class TermClassManagementWidget(QWidget):
         b_layout.addLayout(b_top)
 
         self.tbl_books = QTableWidget()
-        self.tbl_books.setColumnCount(4)
-        self.tbl_books.setHorizontalHeaderLabels(["عنوان کتاب", "قیمت خرید (تومان)", "قیمت فروش (تومان)", "موجودی انبار"])
+        self.tbl_books.setColumnCount(5)
+        self.tbl_books.setHorizontalHeaderLabels(["عنوان کتاب", "قیمت خرید (تومان)", "قیمت فروش (تومان)", "موجودی انبار", "عملیات"])
         self.tbl_books.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         b_layout.addWidget(self.tbl_books)
         tabs.addTab(self.tab_books, "انبار کتاب‌ها")
@@ -754,6 +754,58 @@ class TermClassManagementWidget(QWidget):
             self.tbl_books.setItem(r, 1, QTableWidgetItem(format_currency(b["purchase_price"])))
             self.tbl_books.setItem(r, 2, QTableWidgetItem(format_currency(b["sale_price"])))
             self.tbl_books.setItem(r, 3, QTableWidgetItem(to_persian_digits(b["stock_quantity"])))
+
+            btn_edit = QPushButton("ویرایش")
+            bid = b["id"]
+            btn_edit.clicked.connect(lambda _, id=bid: self.edit_book_dialog(id))
+            self.tbl_books.setCellWidget(r, 4, btn_edit)
+
+    def edit_book_dialog(self, book_id: int):
+        b_repo = BookRepository(self.db_path)
+        book = b_repo.get_by_id(book_id)
+        if not book:
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"ویرایش کتاب: {book['title']}")
+        form = QFormLayout(dlg)
+
+        txt_title = QLineEdit(book["title"])
+        spn_purchase = QDoubleSpinBox()
+        spn_purchase.setRange(0, 50000000)
+        spn_purchase.setValue(book["purchase_price"])
+        spn_purchase.setSingleStep(5000)
+        spn_purchase.setDecimals(0)
+
+        spn_sale = QDoubleSpinBox()
+        spn_sale.setRange(0, 50000000)
+        spn_sale.setValue(book["sale_price"])
+        spn_sale.setSingleStep(5000)
+        spn_sale.setDecimals(0)
+
+        spn_stock = QDoubleSpinBox()
+        spn_stock.setRange(-10000, 100000)
+        spn_stock.setValue(book["stock_quantity"])
+        spn_stock.setDecimals(0)
+
+        form.addRow("عنوان کتاب:", txt_title)
+        form.addRow("قیمت خرید (تومان):", spn_purchase)
+        form.addRow("قیمت فروش (تومان):", spn_sale)
+        form.addRow("موجودی انبار:", spn_stock)
+
+        btn_save = QPushButton("ذخیره تغییرات")
+        btn_save.setProperty("accent", "true")
+        form.addRow(btn_save)
+
+        def save():
+            title = txt_title.text().strip()
+            if title:
+                b_repo.update_book(book_id, title, spn_purchase.value(), spn_sale.value(), int(spn_stock.value()))
+                dlg.accept()
+                self.load_books()
+
+        btn_save.clicked.connect(save)
+        dlg.exec()
 
     def add_book_dialog(self):
         dlg = QDialog(self)
@@ -975,7 +1027,8 @@ class TermClassManagementWidget(QWidget):
                     code=code, name=name, teacher_name=txt_teacher.text().strip(),
                     term_id=cmb_term.currentData(), capacity=cap,
                     tuition_fee=spn_tuition.value(), book_fee=total_book_fee,
-                    other_fee=spn_other.value(), other_fee_title=txt_other_title.text().strip()
+                    other_fee=spn_other.value(), other_fee_title=txt_other_title.text().strip(),
+                    book_ids=list(selected_class_book_ids)
                 )
                 dlg.accept()
                 self.load_classes()

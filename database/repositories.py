@@ -340,7 +340,8 @@ class ClassRepository:
 
     def create_class(self, code: str, name: str, teacher_name: str, term_id: int,
                      capacity: int = 30, start_date: str = "", tuition_fee: float = 0,
-                     book_fee: float = 0, other_fee: float = 0, other_fee_title: str = "هزینه جانبی") -> int:
+                     book_fee: float = 0, other_fee: float = 0, other_fee_title: str = "هزینه جانبی",
+                     book_ids: Optional[List[int]] = None) -> int:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
@@ -349,6 +350,12 @@ class ClassRepository:
             (code, name, teacher_name, term_id, start_date, capacity, tuition_fee, book_fee, other_fee, other_fee_title)
         )
         class_id = cursor.lastrowid
+        if book_ids:
+            for bid in book_ids:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO class_books (class_id, book_id) VALUES (?, ?)",
+                    (class_id, bid)
+                )
         conn.commit()
         conn.close()
         return class_id
@@ -433,6 +440,14 @@ class ClassRepository:
             return r["id"] if r else 1
 
         p_repo = PaymentRepository(self.db_path)
+
+        # Reduce stock for books linked to this class
+        cursor.execute("SELECT book_id FROM class_books WHERE class_id = ?", (class_id,))
+        c_books = cursor.fetchall()
+        if c_books:
+            b_repo = BookRepository(self.db_path)
+            for cb in c_books:
+                b_repo.reduce_stock(cb["book_id"], 1)
 
         conn.commit()
 
@@ -918,6 +933,16 @@ class BookRepository:
         conn.commit()
         conn.close()
         return new_stock
+
+    def update_book(self, book_id: int, title: str, purchase_price: float, sale_price: float, stock_quantity: int) -> None:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE books SET title = ?, purchase_price = ?, sale_price = ?, stock_quantity = ? WHERE id = ?",
+            (title, purchase_price, sale_price, stock_quantity, book_id)
+        )
+        conn.commit()
+        conn.close()
 
 
 class ExpenseRepository:
