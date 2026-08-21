@@ -156,13 +156,26 @@ def init_db(db_path: Optional[str] = None) -> None:
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS books (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT UNIQUE NOT NULL,
+        purchase_price REAL NOT NULL DEFAULT 0,
+        sale_price REAL NOT NULL DEFAULT 0,
+        stock_quantity INTEGER NOT NULL DEFAULT 0
+    );
+
     CREATE TABLE IF NOT EXISTS expenses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         category TEXT NOT NULL,
         amount REAL NOT NULL,
         date TEXT NOT NULL,
+        method TEXT DEFAULT 'cash',
+        pos_device_id INTEGER,
+        card_destination_id INTEGER,
         description TEXT,
         recorded_by_user_id INTEGER,
+        FOREIGN KEY (pos_device_id) REFERENCES pos_devices(id) ON DELETE SET NULL,
+        FOREIGN KEY (card_destination_id) REFERENCES card_destinations(id) ON DELETE SET NULL,
         FOREIGN KEY (recorded_by_user_id) REFERENCES users(id) ON DELETE SET NULL
     );
 

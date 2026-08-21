@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
-from database.repositories import StudentRepository, TermRepository, ClassRepository, AuditRepository, AttachmentRepository, PaymentRepository, ConfigRepository
+from database.repositories import StudentRepository, TermRepository, ClassRepository, AuditRepository, AttachmentRepository, PaymentRepository, ConfigRepository, BookRepository
 from business_logic.formatters import to_persian_digits, to_latin_digits, gregorian_to_shamsi, format_currency
 from business_logic.financial import FinancialEngine
 from reports.excel_export import ExcelExporter
@@ -715,10 +715,81 @@ class TermClassManagementWidget(QWidget):
         t_layout.addWidget(self.tbl_terms)
         tabs.addTab(self.tab_terms, "لیست ترم‌ها")
 
+        # Tab 3: Book Inventory Management (مدیریت انبار کتاب)
+        self.tab_books = QWidget()
+        b_layout = QVBoxLayout(self.tab_books)
+
+        b_top = QHBoxLayout()
+        btn_add_book = QPushButton("افزودن کتاب جدید به انبار +")
+        btn_add_book.setProperty("accent", "true")
+        btn_add_book.clicked.connect(self.add_book_dialog)
+        b_top.addWidget(btn_add_book)
+        b_top.addStretch()
+        b_layout.addLayout(b_top)
+
+        self.tbl_books = QTableWidget()
+        self.tbl_books.setColumnCount(4)
+        self.tbl_books.setHorizontalHeaderLabels(["عنوان کتاب", "قیمت خرید (تومان)", "قیمت فروش (تومان)", "موجودی انبار"])
+        self.tbl_books.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        b_layout.addWidget(self.tbl_books)
+        tabs.addTab(self.tab_books, "انبار کتاب‌ها")
+
         layout.addWidget(tabs)
 
         self.load_terms()
         self.load_classes()
+        self.load_books()
+
+    def load_books(self):
+        b_repo = BookRepository(self.db_path)
+        books = b_repo.list_books()
+        self.tbl_books.setRowCount(len(books))
+        for r, b in enumerate(books):
+            self.tbl_books.setItem(r, 0, QTableWidgetItem(b["title"]))
+            self.tbl_books.setItem(r, 1, QTableWidgetItem(format_currency(b["purchase_price"])))
+            self.tbl_books.setItem(r, 2, QTableWidgetItem(format_currency(b["sale_price"])))
+            self.tbl_books.setItem(r, 3, QTableWidgetItem(to_persian_digits(b["stock_quantity"])))
+
+    def add_book_dialog(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("افزودن کتاب جدید به انبار")
+        form = QFormLayout(dlg)
+
+        txt_title = QLineEdit()
+        spn_purchase = QDoubleSpinBox()
+        spn_purchase.setRange(0, 50000000)
+        spn_purchase.setSingleStep(5000)
+        spn_purchase.setDecimals(0)
+
+        spn_sale = QDoubleSpinBox()
+        spn_sale.setRange(0, 50000000)
+        spn_sale.setSingleStep(5000)
+        spn_sale.setDecimals(0)
+
+        spn_stock = QDoubleSpinBox()
+        spn_stock.setRange(0, 100000)
+        spn_stock.setValue(100)
+        spn_stock.setDecimals(0)
+
+        form.addRow("عنوان کتاب:", txt_title)
+        form.addRow("قیمت خرید (تومان):", spn_purchase)
+        form.addRow("قیمت فروش (تومان):", spn_sale)
+        form.addRow("موجودی اولیه انبار:", spn_stock)
+
+        btn_save = QPushButton("ذخیره کتاب")
+        btn_save.setProperty("accent", "true")
+        form.addRow(btn_save)
+
+        def save():
+            title = txt_title.text().strip()
+            if title:
+                b_repo = BookRepository(self.db_path)
+                b_repo.add_book(title, spn_purchase.value(), spn_sale.value(), int(spn_stock.value()))
+                dlg.accept()
+                self.load_books()
+
+        btn_save.clicked.connect(save)
+        dlg.exec()
 
     def load_terms(self):
         terms = self.term_repo.list_terms()
@@ -805,11 +876,26 @@ class TermClassManagementWidget(QWidget):
         spn_tuition.setSingleStep(50000)
         spn_tuition.setDecimals(0)
 
+        cmb_book_select = QComboBox()
+        cmb_book_select.addItem("-- بدون کتاب / بدون هزینه کتاب (ترم بدون کتاب) --", (0.0, None))
+
+        book_repo = BookRepository(self.db_path)
+        inventory_books = book_repo.list_books()
+        for bk in inventory_books:
+            cmb_book_select.addItem(f"{bk['title']} - فروش: {format_currency(bk['sale_price'])} (خرید: {format_currency(bk['purchase_price'])})", (float(bk['sale_price']), bk['title']))
+
         spn_book = QDoubleSpinBox()
         spn_book.setRange(0, 50000000)
-        spn_book.setValue(0)  # Optional, 0 by default
+        spn_book.setValue(0)
         spn_book.setSingleStep(10000)
         spn_book.setDecimals(0)
+
+        def on_book_selected(idx):
+            data = cmb_book_select.currentData()
+            if data:
+                spn_book.setValue(data[0])
+
+        cmb_book_select.currentIndexChanged.connect(on_book_selected)
 
         spn_other = QDoubleSpinBox()
         spn_other.setRange(0, 50000000)
@@ -823,7 +909,8 @@ class TermClassManagementWidget(QWidget):
         layout.addRow("استاد:", txt_teacher)
         layout.addRow("ترم مربوطه:", cmb_term)
         layout.addRow("مبلغ شهریه ثابت (تومان):", spn_tuition)
-        layout.addRow("مبلغ کتاب (اختیاری):", spn_book)
+        layout.addRow("انتخاب کتاب از انبار:", cmb_book_select)
+        layout.addRow("مبلغ فروش کتاب (تومان):", spn_book)
         layout.addRow("عنوان سایر هزینه‌ها:", txt_other_title)
         layout.addRow("مبلغ سایر هزینه‌ها (تومان):", spn_other)
         layout.addRow("ظرفیت:", txt_cap)

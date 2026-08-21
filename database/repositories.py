@@ -627,7 +627,7 @@ class PaymentRepository:
         total_settled_amount = 0.0
         settlement_descriptions = []
 
-        # 1. Process Debt Settlements atomically without double-counting
+        # 1. Process Debt Settlements
         for debt_item in debt_settlements:
             debt_id = debt_item["debt_id"]
             pay_amt = debt_item["pay_amount"]
@@ -637,23 +637,78 @@ class PaymentRepository:
             if pay_amt <= 0:
                 continue
 
-            total_settled_amount += pay_amt
-
             if pay_amt >= debt_total:
-                # Full settlement: remove pending debt record to prevent double-counting in SUM queries
-                cursor.execute("DELETE FROM payments WHERE id = ?", (debt_id,))
+                # Full settlement: mark existing pending debt as paid with full transaction metadata
+                cursor.execute(
+                    """UPDATE payments SET status = 'paid', amount = ?, method = ?, pos_device_id = ?,
+                       card_destination_id = ?, bank_reference_number = ?, card_tracking_code = ?,
+                       paid_date = ?, paid_time = ? WHERE id = ?""",
+                    (debt_total, method, pos_device_id, card_destination_id, bank_reference_number, card_tracking_code, now_date, now_time, debt_id)
+                )
                 settlement_descriptions.append(f"تسویه کامل: {d_desc}")
+                total_settled_amount += debt_total
+
+                if pay_amt > debt_total:
+                    # Overpayment / Advance Payment
+                    extra_amt = pay_amt - debt_total
+                    p_code_ex = self._generate_payment_code(cursor)
+                    cursor.execute(
+                        """INSERT INTO payments (
+                            unique_code, student_id, term_id, payment_type_id, amount,
+                            discount_percent, discount_amount, late_fee_amount, method,
+                            pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
+                            description, due_date, paid_date, paid_time, is_installment,
+                            installment_no, installment_total, status, recorded_by_user_id
+                        ) VALUES (?, ?, ?, 1, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 'paid', ?)""",
+                        (p_code_ex, student_id, term_id, extra_amt, method, pos_device_id, card_destination_id,
+                         bank_reference_number, card_tracking_code, f"پیش‌پرداخت / طلب بابت ({d_desc})",
+                         now_date, now_date, now_time, recorded_by_user_id)
+                    )
+                    settlement_descriptions.append(f"پیش‌پرداخت اضافی: {extra_amt}")
+                    total_settled_amount += extra_amt
             else:
-                # Partial settlement: reduce remaining pending debt
+                # Partial settlement: reduce pending debt and record paid portion
                 rem_debt = debt_total - pay_amt
                 cursor.execute("UPDATE payments SET amount = ? WHERE id = ?", (rem_debt, debt_id))
-                settlement_descriptions.append(f"تسویه بخشی از ({d_desc}): {pay_amt}")
 
-        # 2. Process New Paid Items
+                p_code_part = self._generate_payment_code(cursor)
+                cursor.execute(
+                    """INSERT INTO payments (
+                        unique_code, student_id, term_id, payment_type_id, amount,
+                        discount_percent, discount_amount, late_fee_amount, method,
+                        pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
+                        description, due_date, paid_date, paid_time, is_installment,
+                        installment_no, installment_total, status, recorded_by_user_id
+                    ) VALUES (?, ?, ?, 1, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 'paid', ?)""",
+                    (p_code_part, student_id, term_id, pay_amt, method, pos_device_id, card_destination_id,
+                     bank_reference_number, card_tracking_code, f"تسویه بخشی از ({d_desc})",
+                     now_date, now_date, now_time, recorded_by_user_id)
+                )
+                settlement_descriptions.append(f"تسویه بخشی از ({d_desc}): {pay_amt}")
+                total_settled_amount += pay_amt
+
+        # 2. Process New Line Items
         new_items_amount = 0.0
         for nitem in new_line_items:
-            new_items_amount += nitem["amount"]
-            settlement_descriptions.append(f"{nitem.get('name_label', 'آیتم جدید')}: {nitem['amount']}")
+            n_amt = nitem["amount"]
+            n_pt = nitem.get("payment_type_id", 1)
+            n_lbl = nitem.get("name_label", "آیتم جدید")
+            new_items_amount += n_amt
+
+            p_code_n = self._generate_payment_code(cursor)
+            cursor.execute(
+                """INSERT INTO payments (
+                    unique_code, student_id, term_id, payment_type_id, amount,
+                    discount_percent, discount_amount, late_fee_amount, method,
+                    pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
+                    description, due_date, paid_date, paid_time, is_installment,
+                    installment_no, installment_total, status, recorded_by_user_id
+                ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 'paid', ?)""",
+                (p_code_n, student_id, term_id, n_pt, n_amt, method, pos_device_id, card_destination_id,
+                 bank_reference_number, card_tracking_code, n_lbl,
+                 now_date, now_date, now_time, recorded_by_user_id)
+            )
+            settlement_descriptions.append(f"{n_lbl}: {n_amt}")
 
         total_paid_overall = total_settled_amount + new_items_amount
 
@@ -661,29 +716,9 @@ class PaymentRepository:
             conn.close()
             return 0
 
-        # 3. Create ONE consolidated payment record for the exact total paid amount (22 columns)
-        p_code = self._generate_payment_code(cursor)
-        combined_desc = f"{description} | " + " - ".join(settlement_descriptions) if description else " - ".join(settlement_descriptions)
-
-        cursor.execute("SELECT id FROM payment_types WHERE name = 'شهریه'")
-        r_pt = cursor.fetchone()
-        pt_id = r_pt["id"] if r_pt else 1
-
-        cursor.execute(
-            """INSERT INTO payments (
-                unique_code, student_id, term_id, payment_type_id, amount,
-                discount_percent, discount_amount, late_fee_amount, method,
-                pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
-                description, due_date, paid_date, paid_time, is_installment,
-                installment_no, installment_total, status, recorded_by_user_id
-            ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 'paid', ?)""",
-            (
-                p_code, student_id, term_id, pt_id, total_paid_overall, method,
-                pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
-                combined_desc, now_date, now_date, now_time, recorded_by_user_id
-            )
-        )
-        final_payment_id = cursor.lastrowid
+        # Fetch last created payment for invoice attachment
+        cursor.execute("SELECT MAX(id) FROM payments WHERE student_id = ? AND status = 'paid'", (student_id,))
+        final_payment_id = cursor.fetchone()[0]
 
         # 4. Issue ONE consolidated invoice
         inv_code = self._generate_invoice_code(cursor)
@@ -866,17 +901,53 @@ class AttachmentRepository:
         return [dict(r) for r in rows]
 
 
+class BookRepository:
+    def __init__(self, db_path: Optional[str] = None):
+        self.db_path = db_path
+
+    def add_book(self, title: str, purchase_price: float, sale_price: float, stock_quantity: int = 0) -> int:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO books (title, purchase_price, sale_price, stock_quantity) VALUES (?, ?, ?, ?)",
+            (title, purchase_price, sale_price, stock_quantity)
+        )
+        bid = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return bid
+
+    def list_books(self) -> List[Dict[str, Any]]:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM books ORDER BY title ASC")
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
+
+    def get_by_id(self, book_id: int) -> Optional[Dict[str, Any]]:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM books WHERE id = ?", (book_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
+
 class ExpenseRepository:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path
 
-    def add_expense(self, category: str, amount: float, date: str, description: str = "", recorded_by_user_id: Optional[int] = None) -> int:
+    def add_expense(self, category: str, amount: float, date: str, description: str = "",
+                    method: str = "cash", pos_device_id: Optional[int] = None,
+                    card_destination_id: Optional[int] = None, recorded_by_user_id: Optional[int] = None) -> int:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
         now_date = date or datetime.now().strftime("%Y-%m-%d")
         cursor.execute(
-            "INSERT INTO expenses (category, amount, date, description, recorded_by_user_id) VALUES (?, ?, ?, ?, ?)",
-            (category, amount, now_date, description, recorded_by_user_id)
+            """INSERT INTO expenses (category, amount, date, method, pos_device_id, card_destination_id, description, recorded_by_user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (category, amount, now_date, method, pos_device_id, card_destination_id, description, recorded_by_user_id)
         )
         expense_id = cursor.lastrowid
         conn.commit()
@@ -886,7 +957,14 @@ class ExpenseRepository:
     def list_expenses(self, date_from: str = "", date_to: str = "", category: str = "") -> List[Dict[str, Any]]:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
-        sql = "SELECT e.*, u.full_name as recorded_by_name FROM expenses e LEFT JOIN users u ON e.recorded_by_user_id = u.id WHERE 1=1"
+        sql = """
+        SELECT e.*, u.full_name as recorded_by_name, pd.label as pos_label, cd.owner_label as card_label, cd.card_number
+        FROM expenses e
+        LEFT JOIN users u ON e.recorded_by_user_id = u.id
+        LEFT JOIN pos_devices pd ON e.pos_device_id = pd.id
+        LEFT JOIN card_destinations cd ON e.card_destination_id = cd.id
+        WHERE 1=1
+        """
         params = []
         if date_from:
             sql += " AND e.date >= ?"

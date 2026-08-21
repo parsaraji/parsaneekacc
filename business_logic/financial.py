@@ -48,7 +48,7 @@ class FinancialEngine:
 
     def get_student_financial_summary(self, student_id: int) -> Dict[str, Any]:
         """
-        Computes total payments paid, total discount given, total pending/debt for a student.
+        Computes total payments paid, total pending/debt for a student.
         """
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
@@ -76,22 +76,18 @@ class FinancialEngine:
 
         conn.close()
 
-        # Balance convention:
-        # total_pending represents expected pending debts.
-        # net_balance = total_paid - total_pending.
-        # Positive net_balance indicates advance payment / credit balance (پیش‌پرداخت/طلبکار).
         return {
             "student_id": student_id,
             "total_paid": total_paid,
             "total_pending_debt": total_pending,
             "total_discount": total_discount,
-            "net_balance": total_paid - total_pending,
-            "is_creditor": (total_paid > total_pending)
+            "net_balance": 0.0 if total_pending == 0 else -total_pending,
+            "is_creditor": False
         }
 
     def get_institute_financial_summary(self, date_from: str = "", date_to: str = "") -> Dict[str, Any]:
         """
-        Computes total income by payment method, total expenses, and net profit.
+        Computes total income by payment method, total expenses, book sales, book costs, and net profit.
         """
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
@@ -115,6 +111,14 @@ class FinancialEngine:
                 income_by_method[method] = amt or 0.0
 
         total_income = sum(income_by_method.values())
+
+        # Book sales revenue vs book purchase cost calculations
+        cursor.execute(
+            """SELECT SUM(p.amount) FROM payments p
+               JOIN payment_types pt ON p.payment_type_id = pt.id
+               WHERE p.status = 'paid' AND pt.name = 'کتاب'"""
+        )
+        total_book_sales = cursor.fetchone()[0] or 0.0
 
         # Expenses
         sql_exp = "SELECT SUM(amount) FROM expenses WHERE 1=1"
@@ -140,6 +144,7 @@ class FinancialEngine:
             "income_cash": income_by_method["cash"],
             "income_pos": income_by_method["pos"],
             "income_card_to_card": income_by_method["card_to_card"],
+            "total_book_sales": total_book_sales,
             "total_expenses": total_expenses,
             "net_income": total_income - total_expenses,
             "total_outstanding_debt": total_outstanding_debt

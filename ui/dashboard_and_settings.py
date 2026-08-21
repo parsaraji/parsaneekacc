@@ -44,9 +44,17 @@ class DashboardWidget(QWidget):
 
         layout.addLayout(kpi_layout)
 
+        feed_hdr = QHBoxLayout()
         lbl_feed = QLabel("آخرین پرداخت‌های ثبت‌شده:")
         lbl_feed.setStyleSheet("font-size: 14px; font-weight: bold; margin-top: 10px;")
-        layout.addWidget(lbl_feed)
+
+        btn_ref_dash = QPushButton("بروزرسانی داشبورد")
+        btn_ref_dash.clicked.connect(self.refresh_dashboard)
+
+        feed_hdr.addWidget(lbl_feed)
+        feed_hdr.addStretch()
+        feed_hdr.addWidget(btn_ref_dash)
+        layout.addLayout(feed_hdr)
 
         self.table_recent = QTableWidget()
         self.table_recent.setColumnCount(5)
@@ -130,8 +138,8 @@ class ExpensesWidget(QWidget):
         layout.addLayout(top_bar)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["دسته‌بندی", "مبلغ", "تاریخ", "توضیحات"])
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["دسته‌بندی", "مبلغ (تومان)", "روش و حساب برداشت", "تاریخ", "توضیحات"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         layout.addWidget(self.table)
 
@@ -154,12 +162,21 @@ class ExpensesWidget(QWidget):
             "other": "سایر"
         }
 
+        m_map = {"cash": "نقد / صندوق", "pos": "دستگاه کارت‌خوان", "card_to_card": "کارت به کارت / حساب"}
         for row, e in enumerate(expenses):
             cat_text = cat_map.get(e["category"], e["category"])
             self.table.setItem(row, 0, QTableWidgetItem(cat_text))
             self.table.setItem(row, 1, QTableWidgetItem(format_currency(e["amount"], unit, use_p)))
-            self.table.setItem(row, 2, QTableWidgetItem(gregorian_to_shamsi(e["date"])))
-            self.table.setItem(row, 3, QTableWidgetItem(e.get("description") or "-"))
+
+            m_str = m_map.get(e.get("method"), e.get("method", "نقد"))
+            if e.get("pos_label"):
+                m_str += f" ({e['pos_label']})"
+            elif e.get("card_label"):
+                m_str += f" ({e['card_label']} - {e.get('card_number', '')})"
+
+            self.table.setItem(row, 2, QTableWidgetItem(m_str))
+            self.table.setItem(row, 3, QTableWidgetItem(gregorian_to_shamsi(e["date"])))
+            self.table.setItem(row, 4, QTableWidgetItem(e.get("description") or "-"))
 
     def add_expense(self):
         dlg = QDialog(self)
@@ -167,12 +184,12 @@ class ExpensesWidget(QWidget):
         form = QFormLayout(dlg)
 
         cmb_cat = QComboBox()
+        cmb_cat.addItem("برداشت مدیر / برداشت از صندوق", "withdrawal")
         cmb_cat.addItem("اجاره", "rent")
         cmb_cat.addItem("حقوق", "salary")
         cmb_cat.addItem("چاپ و تکثیر", "printing")
         cmb_cat.addItem("ملزومات و اداری", "supplies")
         cmb_cat.addItem("بیمه دانش‌آموزی / تکمیلی", "insurance")
-        cmb_cat.addItem("برداشت مدیر / برداشت از صندوق", "withdrawal")
         cmb_cat.addItem("سایر", "other")
 
         spn_amount = QDoubleSpinBox()
@@ -180,19 +197,57 @@ class ExpensesWidget(QWidget):
         spn_amount.setSingleStep(50000)
         spn_amount.setDecimals(0)
 
+        cmb_method = QComboBox()
+        cmb_method.addItem("نقد / برداشت از صندوق", "cash")
+        cmb_method.addItem("برداشت از کارت‌خوان (POS)", "pos")
+        cmb_method.addItem("برداشت / واریز از کارت یا حساب", "card_to_card")
+
+        cmb_pos = QComboBox()
+        pos_list = self.config_repo.list_pos_devices()
+        for p in pos_list:
+            cmb_pos.addItem(f"{p['label']} ({p.get('bank_name', '')})", p['id'])
+
+        cmb_card = QComboBox()
+        card_list = self.config_repo.list_card_destinations()
+        for c in card_list:
+            cmb_card.addItem(f"{c['owner_label']} - {c['card_number']}", c['id'])
+
+        def on_m_changed():
+            m = cmb_method.currentData()
+            cmb_pos.setEnabled(m == "pos")
+            cmb_card.setEnabled(m == "card_to_card")
+
+        cmb_method.currentIndexChanged.connect(on_m_changed)
+        on_m_changed()
+
         txt_desc = QLineEdit()
 
         form.addRow("دسته‌بندی:", cmb_cat)
         form.addRow("مبلغ:", spn_amount)
+        form.addRow("منبع / روش برداشت:", cmb_method)
+        form.addRow("دستگاه کارت‌خوان:", cmb_pos)
+        form.addRow("حساب کارت به کارت:", cmb_card)
         form.addRow("توضیحات:", txt_desc)
 
         btn = QPushButton("ذخیره")
+        btn.setProperty("accent", "true")
         form.addRow(btn)
 
         def save():
             amt = spn_amount.value()
             if amt > 0:
-                self.expense_repo.add_expense(cmb_cat.currentData(), amt, gregorian_to_shamsi(""), txt_desc.text().strip())
+                m = cmb_method.currentData()
+                pid = cmb_pos.currentData() if m == "pos" else None
+                cid = cmb_card.currentData() if m == "card_to_card" else None
+                self.expense_repo.add_expense(
+                    category=cmb_cat.currentData(),
+                    amount=amt,
+                    date=gregorian_to_shamsi(""),
+                    description=txt_desc.text().strip(),
+                    method=m,
+                    pos_device_id=pid,
+                    card_destination_id=cid
+                )
                 dlg.accept()
                 self.load_expenses()
 
@@ -250,9 +305,16 @@ class ReportsWidget(QWidget):
         tab_pnl = QWidget()
         v_pnl = QVBoxLayout(tab_pnl)
 
+        pnl_hdr_lay = QHBoxLayout()
         pnl_hdr = QLabel("صورت حساب سود و زیان آموزشگاه (درآمدها − هزینه‌ها و برداشت‌ها = سود خالص)")
-        pnl_hdr.setStyleSheet("font-size: 14px; font-weight: bold; color: #2980B9; margin-bottom: 10px;")
-        v_pnl.addWidget(pnl_hdr)
+        pnl_hdr.setStyleSheet("font-size: 14px; font-weight: bold; color: #2980B9;")
+        btn_ref_pnl = QPushButton("بروزرسانی صورت حساب")
+        btn_ref_pnl.clicked.connect(self.load_pnl_statement)
+
+        pnl_hdr_lay.addWidget(pnl_hdr)
+        pnl_hdr_lay.addStretch()
+        pnl_hdr_lay.addWidget(btn_ref_pnl)
+        v_pnl.addLayout(pnl_hdr_lay)
 
         self.tbl_pnl = QTableWidget()
         self.tbl_pnl.setColumnCount(2)
@@ -278,12 +340,16 @@ class ReportsWidget(QWidget):
             self.cmb_terms.addItem(t["name"], t["id"])
         self.cmb_terms.currentIndexChanged.connect(self.load_term_debtors)
 
+        btn_ref_deb = QPushButton("بروزرسانی لیست بدهکاران")
+        btn_ref_deb.clicked.connect(self.load_term_debtors)
+
         btn_exp_deb = QPushButton("خروجی اکسل بدهکاران ترم")
         btn_exp_deb.setProperty("accent", "true")
         btn_exp_deb.clicked.connect(self.export_term_debtors_excel)
 
         deb_top.addWidget(QLabel("انتخاب ترم:"))
         deb_top.addWidget(self.cmb_terms, 2)
+        deb_top.addWidget(btn_ref_deb)
         deb_top.addWidget(btn_exp_deb)
         deb_top.addStretch()
         v_deb.addLayout(deb_top)
@@ -364,19 +430,22 @@ class ReportsWidget(QWidget):
     def export_pnl_excel(self):
         filePath, _ = QFileDialog.getSaveFileName(self, "ذخیره صورت حساب سود و زیان", "P_and_L_Statement.xlsx", "Excel Files (*.xlsx)")
         if filePath:
-            fin = self.financial_engine.get_institute_financial_summary()
-            headers = ["عنوان شاخص مالی", "مبلغ (تومان)"]
-            rows = [
-                ["درآمد حاصل از دریافت نقد", fin["income_cash"]],
-                ["درآمد حاصل از دستگاه کارت‌خوان (POS)", fin["income_pos"]],
-                ["درآمد حاصل از واریز کارت به کارت", fin["income_card_to_card"]],
-                ["مجموع کل درآمدهای وصول‌شده", fin["total_income"]],
-                ["کل هزینه‌ها و برداشت‌های ثبت‌شده", fin["total_expenses"]],
-                ["سود / زیان خالص آموزشگاه", fin["net_income"]],
-                ["مجموع بدهی‌های معوق قابل وصول دانش‌آموزان", fin["total_outstanding_debt"]]
-            ]
-            ExcelExporter.export_table_to_excel(filePath, headers, rows, title="صورت حساب سود و زیان")
-            QMessageBox.information(self, "موفقیت", "فایل اکسل صورت حساب سود و زیان با موفقیت ذخیره گردید.")
+            try:
+                fin = self.financial_engine.get_institute_financial_summary()
+                headers = ["عنوان شاخص مالی", "مبلغ (تومان)"]
+                rows = [
+                    ["درآمد حاصل از دریافت نقد", fin["income_cash"]],
+                    ["درآمد حاصل از دستگاه کارت‌خوان (POS)", fin["income_pos"]],
+                    ["درآمد حاصل از واریز کارت به کارت", fin["income_card_to_card"]],
+                    ["مجموع کل درآمدهای وصول‌شده", fin["total_income"]],
+                    ["کل هزینه‌ها و برداشت‌های ثبت‌شده", fin["total_expenses"]],
+                    ["سود / زیان خالص آموزشگاه", fin["net_income"]],
+                    ["مجموع بدهی‌های معوق قابل وصول دانش‌آموزان", fin["total_outstanding_debt"]]
+                ]
+                ExcelExporter.export_table_to_excel(filePath, headers, rows, title="صورت حساب سود و زیان")
+                QMessageBox.information(self, "موفقیت", "فایل اکسل صورت حساب سود و زیان با موفقیت ذخیره گردید.")
+            except Exception as e:
+                QMessageBox.critical(self, "خطا در ذخیره اکسل", f"امکان ذخیره فایل اکسل وجود ندارد:\n{str(e)}")
 
     def export_term_debtors_excel(self):
         tid = self.cmb_terms.currentData()
@@ -385,57 +454,66 @@ class ReportsWidget(QWidget):
             return
         filePath, _ = QFileDialog.getSaveFileName(self, "ذخیره لیست بدهکاران ترم", f"Bedehkaran_{tname}.xlsx", "Excel Files (*.xlsx)")
         if filePath:
-            debtors = self.payment_repo.get_term_debtors(tid)
-            headers = ["کد دانش‌آموزی", "نام و نام خانوادگی", "نام پدر", "شماره تماس", "بابت بدهی", "مبلغ بدهی (تومان)"]
-            rows = []
-            for d in debtors:
-                rows.append([
-                    d.get("unique_code", "-"),
-                    f"{d.get('first_name', '')} {d.get('last_name', '')}",
-                    d.get("father_name", "-"),
-                    d.get("primary_phone", "-"),
-                    d.get("description", "-"),
-                    d.get("amount", 0.0)
-                ])
-            ExcelExporter.export_table_to_excel(filePath, headers, rows, title=f"لیست بدهکاران: {tname}")
-            QMessageBox.information(self, "موفقیت", "فایل اکسل بدهکاران ترم با موفقیت ذخیره گردید.")
+            try:
+                debtors = self.payment_repo.get_term_debtors(tid)
+                headers = ["کد دانش‌آموزی", "نام و نام خانوادگی", "نام پدر", "شماره تماس", "بابت بدهی", "مبلغ بدهی (تومان)"]
+                rows = []
+                for d in debtors:
+                    rows.append([
+                        d.get("unique_code", "-"),
+                        f"{d.get('first_name', '')} {d.get('last_name', '')}",
+                        d.get("father_name", "-"),
+                        d.get("primary_phone", "-"),
+                        d.get("description", "-"),
+                        d.get("amount", 0.0)
+                    ])
+                ExcelExporter.export_table_to_excel(filePath, headers, rows, title=f"لیست بدهکاران: {tname}")
+                QMessageBox.information(self, "موفقیت", "فایل اکسل بدهکاران ترم با موفقیت ذخیره گردید.")
+            except Exception as e:
+                QMessageBox.critical(self, "خطا در ذخیره اکسل", f"امکان ذخیره فایل اکسل وجود ندارد:\n{str(e)}")
 
     def export_payments_excel(self):
         filePath, _ = QFileDialog.getSaveFileName(self, "ذخیره فایل اکسل", "", "Excel Files (*.xlsx)")
         if filePath:
-            payments = self.payment_repo.list_payments(limit=5000)
-            headers = ["کد فاکتور", "نام دانش‌آموز", "بابت", "مبلغ", "روش پرداخت", "تاریخ پرداخت", "وضعیت"]
-            rows = []
-            for p in payments:
-                rows.append([
-                    p.get("invoice_code", "-"),
-                    p.get("student_name", "-"),
-                    p.get("payment_type_name", "-"),
-                    p.get("amount", 0.0),
-                    p.get("method", "-"),
-                    gregorian_to_shamsi(p.get("paid_date", "")),
-                    p.get("status", "-")
-                ])
-            ExcelExporter.export_table_to_excel(filePath, headers, rows, title="گزارش تراکنش‌های مالی")
-            QMessageBox.information(self, "موفقیت", "فایل اکسل با موفقیت ذخیره گردید.")
+            try:
+                payments = self.payment_repo.list_payments(limit=5000)
+                headers = ["کد فاکتور", "نام دانش‌آموز", "بابت", "مبلغ", "روش پرداخت", "تاریخ پرداخت", "وضعیت"]
+                rows = []
+                for p in payments:
+                    rows.append([
+                        p.get("invoice_code", "-"),
+                        p.get("student_name", "-"),
+                        p.get("payment_type_name", "-"),
+                        p.get("amount", 0.0),
+                        p.get("method", "-"),
+                        gregorian_to_shamsi(p.get("paid_date", "")),
+                        p.get("status", "-")
+                    ])
+                ExcelExporter.export_table_to_excel(filePath, headers, rows, title="گزارش تراکنش‌های مالی")
+                QMessageBox.information(self, "موفقیت", "فایل اکسل با موفقیت ذخیره گردید.")
+            except Exception as e:
+                QMessageBox.critical(self, "خطا در ذخیره اکسل", f"امکان ذخیره فایل اکسل وجود ندارد:\n{str(e)}")
 
     def export_students_excel(self):
         filePath, _ = QFileDialog.getSaveFileName(self, "ذخیره فایل اکسل دانش‌آموزان", "", "Excel Files (*.xlsx)")
         if filePath:
-            students = self.student_repo.search_students(limit=5000)
-            headers = ["کد دانش‌آموزی", "نام", "نام خانوادگی", "نام پدر", "شماره همراه", "وضعیت"]
-            rows = []
-            for s in students:
-                rows.append([
-                    s.get("unique_code", "-"),
-                    s.get("first_name", "-"),
-                    s.get("last_name", "-"),
-                    s.get("father_name", "-"),
-                    s.get("primary_phone", "-"),
-                    s.get("status", "-")
-                ])
-            ExcelExporter.export_table_to_excel(filePath, headers, rows, title="لیست دانش‌آموزان")
-            QMessageBox.information(self, "موفقیت", "فایل اکسل دانش‌آموزان با موفقیت ذخیره گردید.")
+            try:
+                students = self.student_repo.search_students(limit=5000)
+                headers = ["کد دانش‌آموزی", "نام", "نام خانوادگی", "نام پدر", "شماره همراه", "وضعیت"]
+                rows = []
+                for s in students:
+                    rows.append([
+                        s.get("unique_code", "-"),
+                        s.get("first_name", "-"),
+                        s.get("last_name", "-"),
+                        s.get("father_name", "-"),
+                        s.get("primary_phone", "-"),
+                        s.get("status", "-")
+                    ])
+                ExcelExporter.export_table_to_excel(filePath, headers, rows, title="لیست دانش‌آموزان")
+                QMessageBox.information(self, "موفقیت", "فایل اکسل دانش‌آموزان با موفقیت ذخیره گردید.")
+            except Exception as e:
+                QMessageBox.critical(self, "خطا در ذخیره اکسل", f"امکان ذخیره فایل اکسل وجود ندارد:\n{str(e)}")
 
 
 class SettingsWidget(QWidget):
