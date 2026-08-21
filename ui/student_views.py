@@ -217,8 +217,8 @@ class StudentProfileDialog(QDialog):
         sum_layout.addWidget(lbl_debts)
 
         self.tbl_pending = QTableWidget()
-        self.tbl_pending.setColumnCount(4)
-        self.tbl_pending.setHorizontalHeaderLabels(["تاریخ ثبت بدهی", "شرح و بابت بدهی", "مبلغ بدهی (تومان)", "وضعیت"])
+        self.tbl_pending.setColumnCount(5)
+        self.tbl_pending.setHorizontalHeaderLabels(["تاریخ ثبت بدهی", "شرح و بابت بدهی", "مبلغ بدهی (تومان)", "وضعیت", "عملیات"])
         self.tbl_pending.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         sum_layout.addWidget(self.tbl_pending)
 
@@ -320,6 +320,12 @@ class StudentProfileDialog(QDialog):
             self.tbl_pending.setItem(r, 2, amt_item)
             self.tbl_pending.setItem(r, 3, QTableWidgetItem("معوق / تسویه‌نشده"))
 
+            btn_del = QPushButton("حذف این بدهی")
+            btn_del.setStyleSheet("color: #C0392B; font-weight: bold;")
+            p_id = p["id"]
+            btn_del.clicked.connect(lambda _, id=p_id: self.delete_debt(id))
+            self.tbl_pending.setCellWidget(r, 4, btn_del)
+
         # Populate Paid Payments Table
         self.tbl_paid.setRowCount(len(paid_list))
         method_map = {"cash": "نقد", "pos": "کارت‌خوان", "card_to_card": "کارت به کارت"}
@@ -330,6 +336,11 @@ class StudentProfileDialog(QDialog):
             self.tbl_paid.setItem(r, 2, QTableWidgetItem(method_map.get(p["method"], p["method"])))
             self.tbl_paid.setItem(r, 3, QTableWidgetItem(format_currency(p["amount"])))
             self.tbl_paid.setItem(r, 4, QTableWidgetItem(p.get("bank_reference_number") or p.get("unique_code") or "-"))
+
+    def delete_debt(self, debt_id: int):
+        if QMessageBox.question(self, "تأیید حذف بدهی", "آیا از حذف کامل این بدهی از حساب دانش‌آموز اطمینان دارید؟") == QMessageBox.Yes:
+            self.payment_repo.delete_payment(debt_id)
+            self.load_financial_ledgers()
 
     def export_student_ledger_excel(self):
         s = self.student_repo.get_by_id(self.student_id)
@@ -814,7 +825,7 @@ class TermClassManagementWidget(QWidget):
                 btn_lay.setContentsMargins(0, 0, 0, 0)
 
                 btn_transfer = QPushButton("انتقال")
-                btn_rem = QPushButton("حذف از کلاس (لغو بدهی)")
+                btn_rem = QPushButton("حذف از این کلاس")
                 s_id = s["id"]
                 btn_transfer.clicked.connect(lambda _, id=s_id: transfer_st(id))
                 btn_rem.clicked.connect(lambda _, id=s_id: remove_st(id))
@@ -865,7 +876,7 @@ class TermClassManagementWidget(QWidget):
             tdlg.exec()
 
         def remove_st(student_id):
-            if QMessageBox.question(dlg, "تأیید حذف", "آیا از حذف دانش‌آموز از کلاس و لغو بدهی‌های معوق مرتبط با این کلاس اطمینان دارید؟") == QMessageBox.Yes:
+            if QMessageBox.question(dlg, "تأیید حذف", "آیا از حذف دانش‌آموز از این کلاس اطمینان دارید؟ (بدهی‌های قبلی در حساب دانش‌آموز باقی می‌ماند)") == QMessageBox.Yes:
                 self.class_repo.remove_enrollment(class_id, student_id)
                 refresh_roster()
                 self.load_classes()

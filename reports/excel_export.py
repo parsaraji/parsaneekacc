@@ -57,7 +57,7 @@ class ExcelExporter:
                 if is_even:
                     cell.fill = alt_fill
 
-        # Auto-fit columns
+        # Auto-fit columns safely
         for col_idx in range(1, len(headers) + 1):
             max_len = 0
             col_letter = get_column_letter(col_idx)
@@ -65,6 +65,6 @@ class ExcelExporter:
                 val_str = str(ws.cell(row=row_idx, column=col_idx).value or '')
                 if len(val_str) > max_len:
                     max_len = len(val_str)
-            ws.column_dimensions[col_letter].width = max(max_len + 6, 12)
+            ws.column_dimensions[col_letter].width = min(max(max_len + 6, 12), 60)
 
         wb.save(file_path)

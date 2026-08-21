@@ -161,6 +161,7 @@ class InvoiceTemplateRenderer:
         paid_date = gregorian_to_shamsi(data.get("paid_date", ""))
         paid_time = data.get("paid_time", "")
         ref_code = data.get('card_tracking_code') or data.get('bank_reference_number') or '-'
+        full_desc = data.get("description") or payment_type
 
         fmt_amount = format_currency(amount, self.currency_unit, self.use_persian_digits)
 
@@ -183,12 +184,12 @@ class InvoiceTemplateRenderer:
                     <td style="width:34%;"><b>ترم:</b> {term_name}</td>
                 </tr>
                 <tr>
-                    <td><b>بابت:</b> {payment_type}</td>
-                    <td><b>روش:</b> {method_str}</td>
-                    <td><b>مبلغ:</b> {fmt_amount}</td>
+                    <td colspan="2"><b>شرح و جزئیات پرداخت:</b> {full_desc}</td>
+                    <td><b>مبلغ دریافتی:</b> {fmt_amount}</td>
                 </tr>
                 <tr>
-                    <td colspan="2"><b>تاریخ و زمان:</b> {paid_date} - {paid_time}</td>
+                    <td><b>روش:</b> {method_str}</td>
+                    <td><b>تاریخ و زمان:</b> {paid_date} - {paid_time}</td>
                     <td><b>کد پیگیری:</b> {ref_code}</td>
                 </tr>
             </table>
@@ -203,7 +204,7 @@ class InvoiceTemplateRenderer:
             <table class="data-table" style="font-size:0.88em;">
                 <tr><td><b>شماره رسید:</b> {inv_code}</td></tr>
                 <tr><td><b>نام:</b> {student_name}</td></tr>
-                <tr><td><b>بابت:</b> {payment_type} ({term_name})</td></tr>
+                <tr><td><b>بابت:</b> {full_desc}</td></tr>
                 <tr><td><b>مبلغ:</b> {fmt_amount}</td></tr>
                 <tr><td><b>تاریخ:</b> {paid_date}</td></tr>
             </table>

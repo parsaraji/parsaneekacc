@@ -477,20 +477,10 @@ class ClassRepository:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
 
-        cursor.execute("SELECT name, code FROM classes WHERE id = ?", (class_id,))
-        cls = cursor.fetchone()
-
         cursor.execute(
             "DELETE FROM class_enrollments WHERE class_id = ? AND student_id = ?",
             (class_id, student_id)
         )
-
-        if cls:
-            pattern = f"%کلاس {cls['name']}%"
-            cursor.execute(
-                "DELETE FROM payments WHERE student_id = ? AND status = 'pending' AND description LIKE ?",
-                (student_id, pattern)
-            )
 
         conn.commit()
         conn.close()
@@ -773,6 +763,15 @@ class PaymentRepository:
         rows = cursor.fetchall()
         conn.close()
         return [dict(r) for r in rows]
+
+    def delete_payment(self, payment_id: int) -> None:
+        """Deletes a payment/debt record by ID."""
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM invoices WHERE payment_id = ?", (payment_id,))
+        cursor.execute("DELETE FROM payments WHERE id = ?", (payment_id,))
+        conn.commit()
+        conn.close()
 
     def get_payment_by_id(self, payment_id: int) -> Optional[Dict[str, Any]]:
         conn = get_connection(self.db_path)
