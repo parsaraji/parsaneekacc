@@ -11,7 +11,10 @@ class ExcelExporter:
         """
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws.title = title[:30]
+
+        # Clean title for worksheet name (openpyxl disallows invalid characters like : \ / ? * [ ])
+        clean_title = "".join(c for c in title if c not in r":\/?*[]")[:30].strip() or "گزارش"
+        ws.title = clean_title
         ws.views.sheetView[0].rightToLeft = True
 
         # Styles

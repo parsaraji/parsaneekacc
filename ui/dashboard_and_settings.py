@@ -121,7 +121,11 @@ class ExpensesWidget(QWidget):
         self.btn_add.setProperty("accent", "true")
         self.btn_add.clicked.connect(self.add_expense)
 
+        self.btn_refresh = QPushButton("بروزرسانی لیست")
+        self.btn_refresh.clicked.connect(self.load_expenses)
+
         top_bar.addWidget(self.btn_add)
+        top_bar.addWidget(self.btn_refresh)
         top_bar.addStretch()
         layout.addLayout(top_bar)
 
@@ -219,12 +223,16 @@ class ReportsWidget(QWidget):
         v_tx = QVBoxLayout(tab_tx)
 
         top_bar = QHBoxLayout()
+        self.btn_refresh_all = QPushButton("بروزرسانی گزارشات")
+        self.btn_refresh_all.clicked.connect(self.refresh_all_reports)
+
         self.btn_export_payments = QPushButton("خروجی اکسل کلیه تراکنش‌ها")
         self.btn_export_payments.clicked.connect(self.export_payments_excel)
 
         self.btn_export_students = QPushButton("خروجی اکسل لیست دانش‌آموزان")
         self.btn_export_students.clicked.connect(self.export_students_excel)
 
+        top_bar.addWidget(self.btn_refresh_all)
         top_bar.addWidget(self.btn_export_payments)
         top_bar.addWidget(self.btn_export_students)
         top_bar.addStretch()
@@ -289,6 +297,11 @@ class ReportsWidget(QWidget):
         tabs.addTab(tab_deb, "لیست بدهکاران ترم")
 
         layout.addWidget(tabs)
+        self.load_data()
+        self.load_pnl_statement()
+        self.load_term_debtors()
+
+    def refresh_all_reports(self):
         self.load_data()
         self.load_pnl_statement()
         self.load_term_debtors()

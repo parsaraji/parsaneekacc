@@ -395,6 +395,9 @@ class PaymentsAndInvoicingWidget(QWidget):
         self.btn_new_payment.setProperty("accent", "true")
         self.btn_new_payment.clicked.connect(self.record_new_payment)
 
+        self.btn_refresh = QPushButton("بروزرسانی لیست")
+        self.btn_refresh.clicked.connect(self.load_payments)
+
         self.btn_batch_print = QPushButton("چاپ گروهی فاکتورهای انتخابی")
         self.btn_batch_print.clicked.connect(self.batch_print_invoices)
 
@@ -402,6 +405,7 @@ class PaymentsAndInvoicingWidget(QWidget):
         self.btn_daily_closing.clicked.connect(self.open_daily_closing)
 
         top_bar.addWidget(self.btn_new_payment)
+        top_bar.addWidget(self.btn_refresh)
         top_bar.addWidget(self.btn_batch_print)
         top_bar.addWidget(self.btn_daily_closing)
         top_bar.addStretch()
