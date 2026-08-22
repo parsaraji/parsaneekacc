@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QTextEdit,
     QDialog, QFormLayout, QMessageBox, QTabWidget, QFileDialog, QListWidget, QListWidgetItem,
-    QCheckBox, QDoubleSpinBox
+    QCheckBox, QDoubleSpinBox, QGroupBox
 )
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -292,16 +292,16 @@ class StudentProfileDialog(QDialog):
         self.load_phones()
         tabs.addTab(tab_phones, "شماره‌های تماس")
 
-        # Tab 3: Terms History
-        tab_terms = QWidget()
-        t_layout = QVBoxLayout(tab_terms)
-        self.tbl_terms = QTableWidget()
-        self.tbl_terms.setColumnCount(2)
-        self.tbl_terms.setHorizontalHeaderLabels(["عنوان ترم", "تاریخ ثبت‌نام"])
-        self.tbl_terms.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        t_layout.addWidget(self.tbl_terms)
-        self.load_terms()
-        tabs.addTab(tab_terms, "سابقه ترم‌ها")
+        # Tab 3: Class History (سابقه کلاس‌ها)
+        tab_classes_hist = QWidget()
+        ch_layout = QVBoxLayout(tab_classes_hist)
+        self.tbl_classes_hist = QTableWidget()
+        self.tbl_classes_hist.setColumnCount(4)
+        self.tbl_classes_hist.setHorizontalHeaderLabels(["کد کلاس", "نام کلاس", "استاد", "تاریخ ثبت‌نام"])
+        self.tbl_classes_hist.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        ch_layout.addWidget(self.tbl_classes_hist)
+        self.load_classes_history()
+        tabs.addTab(tab_classes_hist, "سابقه کلاس‌ها")
 
         # Tab 4: Categorized Attachments Table
         tab_att = QWidget()
@@ -677,12 +677,27 @@ class StudentProfileDialog(QDialog):
             self.tbl_phones.setItem(row, 1, QTableWidgetItem(p.get("label", "")))
             self.tbl_phones.setItem(row, 2, QTableWidgetItem("بله" if p.get("is_primary") else "خیر"))
 
-    def load_terms(self):
-        terms = self.term_repo.get_student_terms(self.student_id)
-        self.tbl_terms.setRowCount(len(terms))
-        for row, t in enumerate(terms):
-            self.tbl_terms.setItem(row, 0, QTableWidgetItem(t["name"]))
-            self.tbl_terms.setItem(row, 1, QTableWidgetItem(gregorian_to_shamsi(t["enrolled_at"])))
+    def load_classes_history(self):
+        from database.db import get_connection
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT c.code, c.name, c.teacher_name, ce.enrolled_at
+               FROM class_enrollments ce
+               JOIN classes c ON ce.class_id = c.id
+               WHERE ce.student_id = ?
+               ORDER BY ce.id DESC""",
+            (self.student_id,)
+        )
+        rows = cursor.fetchall()
+        conn.close()
+
+        self.tbl_classes_hist.setRowCount(len(rows))
+        for row, r in enumerate(rows):
+            self.tbl_classes_hist.setItem(row, 0, QTableWidgetItem(r["code"]))
+            self.tbl_classes_hist.setItem(row, 1, QTableWidgetItem(r["name"]))
+            self.tbl_classes_hist.setItem(row, 2, QTableWidgetItem(r["teacher_name"] or "-"))
+            self.tbl_classes_hist.setItem(row, 3, QTableWidgetItem(gregorian_to_shamsi(r["enrolled_at"])))
 
     def load_attachments(self):
         atts = self.attachment_repo.list_attachments(self.student_id)
@@ -1618,13 +1633,11 @@ class TermClassManagementWidget(QWidget):
                 btn_lay = QHBoxLayout(btn_pnl)
                 btn_lay.setContentsMargins(0, 0, 0, 0)
 
-                btn_transfer = QPushButton("انتقال")
                 btn_rem = QPushButton("حذف از این کلاس")
+                btn_rem.setStyleSheet("color: #C0392B; font-weight: bold;")
                 s_id = s["id"]
-                btn_transfer.clicked.connect(lambda _, id=s_id: transfer_st(id))
                 btn_rem.clicked.connect(lambda _, id=s_id: remove_st(id))
 
-                btn_lay.addWidget(btn_transfer)
                 btn_lay.addWidget(btn_rem)
                 tbl.setCellWidget(row, 3, btn_pnl)
 
@@ -1731,128 +1744,6 @@ class TermClassManagementWidget(QWidget):
                 refresh_roster()
                 self.load_classes()
 
-        def transfer_st(student_id):
-            all_cls = self.class_repo.list_classes(status="active")
-            target_cls = [c for c in all_cls if c["id"] != class_id]
-            if not target_cls:
-                QMessageBox.warning(dlg, "خطا", "کلاس مقصد دیگری یافت نشد.")
-                return
-
-            st_data = self.student_repo.get_by_id(student_id)
-
-            tdlg = QDialog(dlg)
-            tdlg.setWindowTitle(f"انتقال دانش‌آموز {st_data['first_name']} {st_data['last_name']} به کلاس جدید")
-            tdlg.resize(550, 420)
-            tlayout = QVBoxLayout(tdlg)
-
-            tform = QFormLayout()
-            cmb_target = QComboBox()
-            for c in target_cls:
-                cmb_target.addItem(f"{c['name']} ({c['code']}) - شهریه: {format_currency(c['tuition_fee'])}", c["id"])
-
-            tform.addRow("انتخاب کلاس مقصد:", cmb_target)
-            tlayout.addLayout(tform)
-
-            # Financial summary group of transfer
-            grp_fin = QGroupBox("خلاصه اطلاعات مالی و کتاب‌های کلاس مقصد")
-            v_fin = QVBoxLayout(grp_fin)
-
-            lbl_details = QLabel()
-            lbl_details.setStyleSheet("font-weight: bold; color: #2C3E50;")
-            v_fin.addWidget(lbl_details)
-
-            form_disc = QFormLayout()
-            spn_disc_amt = QDoubleSpinBox()
-            spn_disc_amt.setRange(0, 100000000)
-            spn_disc_amt.setSingleStep(10000)
-            spn_disc_amt.setDecimals(0)
-
-            spn_disc_pct = QDoubleSpinBox()
-            spn_disc_pct.setRange(0, 100)
-            spn_disc_pct.setSingleStep(5)
-            spn_disc_pct.setSuffix("%")
-
-            form_disc.addRow("مبلغ تخفیف انتقال (تومان):", spn_disc_amt)
-            form_disc.addRow("یا درصد تخفیف انتقال:", spn_disc_pct)
-            v_fin.addLayout(form_disc)
-
-            lbl_net_debt = QLabel("بدهی خالص ایجادشونده بابت انتقال: ۰ تومان")
-            lbl_net_debt.setStyleSheet("font-weight: bold; color: #C0392B; font-size: 13px;")
-            v_fin.addWidget(lbl_net_debt)
-
-            tlayout.addWidget(grp_fin)
-
-            b_repo = BookRepository(self.db_path)
-
-            def update_transfer_financials():
-                to_cid = cmb_target.currentData()
-                to_cls = self.class_repo.get_by_id(to_cid)
-                if not to_cls:
-                    return
-
-                cbks = self.class_repo.get_class_books(to_cid)
-                cbks_names = " - ".join(b["title"] for b in cbks) if cbks else "بدون کتاب اختصاصی"
-
-                info_text = (
-                    f"شهریه کلاس مقصد: {format_currency(to_cls['tuition_fee'])}\n"
-                    f"هزینه کتاب‌های کلاس: {format_currency(to_cls['book_fee'])}\n"
-                    f"عنوان کتاب‌ها: {cbks_names}\n"
-                    f"هزینه‌های جانبی: {format_currency(to_cls['other_fee'])}"
-                )
-                lbl_details.setText(info_text)
-
-                base_total = to_cls["tuition_fee"] + to_cls["book_fee"] + to_cls["other_fee"]
-                disc_val = spn_disc_amt.value()
-                if spn_disc_pct.value() > 0:
-                    disc_val += (base_total * (spn_disc_pct.value() / 100.0))
-
-                net_val = base_total - disc_val
-                if net_val < 0:
-                    net_val = 0.0
-
-                lbl_net_debt.setText(f"بدهی خالص ایجادشونده بابت انتقال: {format_currency(net_val)}")
-
-            cmb_target.currentIndexChanged.connect(update_transfer_financials)
-            spn_disc_amt.valueChanged.connect(update_transfer_financials)
-            spn_disc_pct.valueChanged.connect(update_transfer_financials)
-            update_transfer_financials()
-
-            btn_confirm_transfer = QPushButton("تأیید مالی و انتقال دانش‌آموز")
-            btn_confirm_transfer.setProperty("accent", "true")
-            tlayout.addWidget(btn_confirm_transfer)
-
-            def do_transfer():
-                to_cid = cmb_target.currentData()
-                to_cls = self.class_repo.get_by_id(to_cid)
-
-                # Inventory confirmation check for books assigned to target class
-                cbks = self.class_repo.get_class_books(to_cid)
-                out_of_stock = [b for b in cbks if b["stock_quantity"] <= 0]
-                if out_of_stock:
-                    titles = " - ".join(b["title"] for b in out_of_stock)
-                    if QMessageBox.question(tdlg, "هشدار موجودی انبار کتاب", f"موجودی کتاب‌های زیر در انبار صفر یا منفی است:\n{titles}\n\nآیا مایلید انتقال انجام شده و موجودی انبار منفی گردد؟") != QMessageBox.Yes:
-                        return
-
-                # Transfer enrollment
-                self.class_repo.transfer_student(class_id, to_cid, student_id)
-
-                # Apply transfer discount if entered
-                disc_amt = spn_disc_amt.value()
-                disc_pct = spn_disc_pct.value()
-                if disc_amt > 0 or disc_pct > 0:
-                    # Apply discount to newly generated pending debts
-                    all_p = self.payment_repo.list_payments(student_id=student_id, limit=20)
-                    pending_tuition = [p for p in all_p if p["status"] == "pending" and p["term_id"] == to_cls["term_id"]]
-                    if pending_tuition:
-                        self.payment_repo.apply_discount_to_debt(pending_tuition[0]["id"], discount_amount=disc_amt, discount_percent=disc_pct)
-
-                QMessageBox.information(tdlg, "موفقیت", "دانش‌آموز با موفقیت به کلاس مقصد منتقل شد و بدهی مربوطه ثبت گردید.")
-                tdlg.accept()
-                refresh_roster()
-                self.load_classes()
-
-            btn_confirm_transfer.clicked.connect(do_transfer)
-            tdlg.exec()
 
         def remove_st(student_id):
             if QMessageBox.question(dlg, "تأیید حذف", "آیا از حذف دانش‌آموز از این کلاس اطمینان دارید؟ (بدهی‌های قبلی در حساب دانش‌آموز باقی می‌ماند)") == QMessageBox.Yes:
