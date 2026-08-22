@@ -266,9 +266,11 @@ class StudentProfileDialog(QDialog):
         sum_layout.addWidget(lbl_paid)
 
         self.tbl_paid = QTableWidget()
-        self.tbl_paid.setColumnCount(5)
-        self.tbl_paid.setHorizontalHeaderLabels(["تاریخ و زمان", "شرح و بابت", "روش پرداخت", "مبلغ پرداختی (تومان)", "کد پیگیری / فاکتور"])
-        self.tbl_paid.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_paid.setColumnCount(6)
+        self.tbl_paid.setHorizontalHeaderLabels(["تاریخ و زمان", "شرح و بابت", "روش پرداخت", "مبلغ پرداختی (تومان)", "کد پیگیری / فاکتور", "نمایش / چاپ فاکتور"])
+        for col in range(5):
+            self.tbl_paid.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
+        self.tbl_paid.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         sum_layout.addWidget(self.tbl_paid)
 
         btn_export_st_ledger = QPushButton("خروجی اکسل تراز مالی کامل این دانش‌آموز")
@@ -420,7 +422,7 @@ class StudentProfileDialog(QDialog):
         btn_save.clicked.connect(save)
         dlg.exec()
 
-        # Populate Paid Payments Table
+        # Populate Paid Payments Table with Print Invoice Button
         self.tbl_paid.setRowCount(len(paid_list))
         method_map = {"cash": "نقد", "pos": "کارت‌خوان", "card_to_card": "کارت به کارت"}
         for r, p in enumerate(paid_list):
@@ -443,6 +445,50 @@ class StudentProfileDialog(QDialog):
 
             track_code = p.get("bank_reference_number") or p.get("invoice_code") or p.get("unique_code") or "-"
             self.tbl_paid.setItem(r, 4, QTableWidgetItem(track_code))
+
+            btn_print_inv = QPushButton("مشاهده / چاپ فاکتور")
+            btn_print_inv.setProperty("accent", "true")
+            pid = p["id"]
+            btn_print_inv.clicked.connect(lambda _, id=pid: self.print_student_invoice(id))
+            self.tbl_paid.setCellWidget(r, 5, btn_print_inv)
+
+    def print_student_invoice(self, payment_id: int):
+        p_data = self.payment_repo.get_payment_by_id(payment_id)
+        if not p_data:
+            QMessageBox.warning(self, "خطا", "اطلاعات فاکتور یافت نشد.")
+            return
+
+        cfg_repo = ConfigRepository(self.db_path)
+        currency_unit = cfg_repo.get_setting("currency_unit", "toman")
+        numeral_fmt = cfg_repo.get_setting("numeral_format", "persian")
+        page_size_setting = cfg_repo.get_setting("invoice_page_size", "A4")
+
+        from reports.invoice_renderer import InvoiceTemplateRenderer
+        from PySide6.QtPrintSupport import QPrinter, QPrintPreviewDialog
+        from PySide6.QtGui import QTextDocument, QPageLayout, QPageSize
+        from PySide6.QtCore import QMarginsF
+
+        renderer = InvoiceTemplateRenderer(
+            currency_unit=currency_unit,
+            use_persian_digits=(numeral_fmt == "persian"),
+            page_size=page_size_setting
+        )
+        html_content = renderer.render_batch_html([p_data])
+
+        printer = QPrinter(QPrinter.HighResolution)
+        page_sz = QPageSize(QPageSize.A5) if page_size_setting.upper() == "A5" else QPageSize(QPageSize.A4)
+        printer.setPageSize(page_sz)
+
+        margin_mm = 5.0 if page_size_setting.upper() == "A5" else 8.0
+        printer.setPageMargins(QMarginsF(margin_mm, margin_mm, margin_mm, margin_mm), QPageLayout.Millimeter)
+
+        doc = QTextDocument()
+        doc.setPageSize(printer.pageLayout().paintRect(QPageLayout.Point).size())
+        doc.setHtml(html_content)
+
+        preview = QPrintPreviewDialog(printer, self)
+        preview.paintRequested.connect(lambda p: doc.print_(p))
+        preview.exec()
 
     def add_inventory_item_charge(self):
         b_repo = BookRepository(self.db_path)
@@ -1692,25 +1738,120 @@ class TermClassManagementWidget(QWidget):
                 QMessageBox.warning(dlg, "خطا", "کلاس مقصد دیگری یافت نشد.")
                 return
 
+            st_data = self.student_repo.get_by_id(student_id)
+
             tdlg = QDialog(dlg)
-            tdlg.setWindowTitle("انتقال دانش‌آموز به کلاس جدید")
-            tform = QFormLayout(tdlg)
+            tdlg.setWindowTitle(f"انتقال دانش‌آموز {st_data['first_name']} {st_data['last_name']} به کلاس جدید")
+            tdlg.resize(550, 420)
+            tlayout = QVBoxLayout(tdlg)
+
+            tform = QFormLayout()
             cmb_target = QComboBox()
             for c in target_cls:
-                cmb_target.addItem(f"{c['name']} ({c['code']})", c["id"])
+                cmb_target.addItem(f"{c['name']} ({c['code']}) - شهریه: {format_currency(c['tuition_fee'])}", c["id"])
 
-            tform.addRow("کلاس مقصد:", cmb_target)
-            btn_ok = QPushButton("انتقال")
-            tform.addRow(btn_ok)
+            tform.addRow("انتخاب کلاس مقصد:", cmb_target)
+            tlayout.addLayout(tform)
+
+            # Financial summary group of transfer
+            grp_fin = QGroupBox("خلاصه اطلاعات مالی و کتاب‌های کلاس مقصد")
+            v_fin = QVBoxLayout(grp_fin)
+
+            lbl_details = QLabel()
+            lbl_details.setStyleSheet("font-weight: bold; color: #2C3E50;")
+            v_fin.addWidget(lbl_details)
+
+            form_disc = QFormLayout()
+            spn_disc_amt = QDoubleSpinBox()
+            spn_disc_amt.setRange(0, 100000000)
+            spn_disc_amt.setSingleStep(10000)
+            spn_disc_amt.setDecimals(0)
+
+            spn_disc_pct = QDoubleSpinBox()
+            spn_disc_pct.setRange(0, 100)
+            spn_disc_pct.setSingleStep(5)
+            spn_disc_pct.setSuffix("%")
+
+            form_disc.addRow("مبلغ تخفیف انتقال (تومان):", spn_disc_amt)
+            form_disc.addRow("یا درصد تخفیف انتقال:", spn_disc_pct)
+            v_fin.addLayout(form_disc)
+
+            lbl_net_debt = QLabel("بدهی خالص ایجادشونده بابت انتقال: ۰ تومان")
+            lbl_net_debt.setStyleSheet("font-weight: bold; color: #C0392B; font-size: 13px;")
+            v_fin.addWidget(lbl_net_debt)
+
+            tlayout.addWidget(grp_fin)
+
+            b_repo = BookRepository(self.db_path)
+
+            def update_transfer_financials():
+                to_cid = cmb_target.currentData()
+                to_cls = self.class_repo.get_by_id(to_cid)
+                if not to_cls:
+                    return
+
+                cbks = self.class_repo.get_class_books(to_cid)
+                cbks_names = " - ".join(b["title"] for b in cbks) if cbks else "بدون کتاب اختصاصی"
+
+                info_text = (
+                    f"شهریه کلاس مقصد: {format_currency(to_cls['tuition_fee'])}\n"
+                    f"هزینه کتاب‌های کلاس: {format_currency(to_cls['book_fee'])}\n"
+                    f"عنوان کتاب‌ها: {cbks_names}\n"
+                    f"هزینه‌های جانبی: {format_currency(to_cls['other_fee'])}"
+                )
+                lbl_details.setText(info_text)
+
+                base_total = to_cls["tuition_fee"] + to_cls["book_fee"] + to_cls["other_fee"]
+                disc_val = spn_disc_amt.value()
+                if spn_disc_pct.value() > 0:
+                    disc_val += (base_total * (spn_disc_pct.value() / 100.0))
+
+                net_val = base_total - disc_val
+                if net_val < 0:
+                    net_val = 0.0
+
+                lbl_net_debt.setText(f"بدهی خالص ایجادشونده بابت انتقال: {format_currency(net_val)}")
+
+            cmb_target.currentIndexChanged.connect(update_transfer_financials)
+            spn_disc_amt.valueChanged.connect(update_transfer_financials)
+            spn_disc_pct.valueChanged.connect(update_transfer_financials)
+            update_transfer_financials()
+
+            btn_confirm_transfer = QPushButton("تأیید مالی و انتقال دانش‌آموز")
+            btn_confirm_transfer.setProperty("accent", "true")
+            tlayout.addWidget(btn_confirm_transfer)
 
             def do_transfer():
                 to_cid = cmb_target.currentData()
+                to_cls = self.class_repo.get_by_id(to_cid)
+
+                # Inventory confirmation check for books assigned to target class
+                cbks = self.class_repo.get_class_books(to_cid)
+                out_of_stock = [b for b in cbks if b["stock_quantity"] <= 0]
+                if out_of_stock:
+                    titles = " - ".join(b["title"] for b in out_of_stock)
+                    if QMessageBox.question(tdlg, "هشدار موجودی انبار کتاب", f"موجودی کتاب‌های زیر در انبار صفر یا منفی است:\n{titles}\n\nآیا مایلید انتقال انجام شده و موجودی انبار منفی گردد؟") != QMessageBox.Yes:
+                        return
+
+                # Transfer enrollment
                 self.class_repo.transfer_student(class_id, to_cid, student_id)
+
+                # Apply transfer discount if entered
+                disc_amt = spn_disc_amt.value()
+                disc_pct = spn_disc_pct.value()
+                if disc_amt > 0 or disc_pct > 0:
+                    # Apply discount to newly generated pending debts
+                    all_p = self.payment_repo.list_payments(student_id=student_id, limit=20)
+                    pending_tuition = [p for p in all_p if p["status"] == "pending" and p["term_id"] == to_cls["term_id"]]
+                    if pending_tuition:
+                        self.payment_repo.apply_discount_to_debt(pending_tuition[0]["id"], discount_amount=disc_amt, discount_percent=disc_pct)
+
+                QMessageBox.information(tdlg, "موفقیت", "دانش‌آموز با موفقیت به کلاس مقصد منتقل شد و بدهی مربوطه ثبت گردید.")
                 tdlg.accept()
                 refresh_roster()
                 self.load_classes()
 
-            btn_ok.clicked.connect(do_transfer)
+            btn_confirm_transfer.clicked.connect(do_transfer)
             tdlg.exec()
 
         def remove_st(student_id):
