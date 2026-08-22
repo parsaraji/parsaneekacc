@@ -168,7 +168,7 @@ class StudentProfileDialog(QDialog):
         self.attachment_repo = AttachmentRepository(db_path)
 
         self.setWindowTitle("شناسنامه کامل و تراز مالی دانش‌آموز")
-        self.resize(800, 580)
+        self.setWindowState(self.windowState() | Qt.WindowMaximized)
         self.init_ui()
 
     def init_ui(self):
@@ -178,9 +178,31 @@ class StudentProfileDialog(QDialog):
             layout.addWidget(QLabel("دانش‌آموز یافت نشد."))
             return
 
+        hdr_box = QHBoxLayout()
         header = QLabel(f"پروفایل: {student['first_name']} {student['last_name']} ({student['unique_code']})")
-        header.setStyleSheet("font-size: 16px; font-weight: bold; color: #2980B9;")
-        layout.addWidget(header)
+        header.setStyleSheet("font-size: 18px; font-weight: bold; color: #2980B9;")
+
+        lbl_photo = QLabel()
+        lbl_photo.setFixedSize(70, 70)
+        lbl_photo.setStyleSheet("border: 2px solid #2980B9; border-radius: 35px; background-color: #ECF0F1;")
+        lbl_photo.setAlignment(Qt.AlignCenter)
+        lbl_photo.setText("عکس")
+
+        # Load student photo from attachments if available
+        atts = self.attachment_repo.list_attachments(self.student_id)
+        for a in atts:
+            cat = a.get("category", "")
+            fpath = a.get("file_path", "")
+            if "عکس" in cat or fpath.lower().endswith(('.png', '.jpg', '.jpeg', '.webp', '.bmp')):
+                if os.path.exists(fpath):
+                    from PySide6.QtGui import QPixmap
+                    pix = QPixmap(fpath).scaled(70, 70, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                    lbl_photo.setPixmap(pix)
+                    break
+
+        hdr_box.addWidget(lbl_photo)
+        hdr_box.addWidget(header, 1)
+        layout.addLayout(hdr_box)
 
         tabs = QTabWidget()
 
@@ -279,25 +301,27 @@ class StudentProfileDialog(QDialog):
         self.load_terms()
         tabs.addTab(tab_terms, "سابقه ترم‌ها")
 
-        # Tab 4: Attachments
+        # Tab 4: Categorized Attachments Table
         tab_att = QWidget()
         att_lay = QVBoxLayout(tab_att)
-        self.list_att = QListWidget()
-        self.list_att.doubleClicked.connect(self.open_attachment_item)
 
         h_att_btn = QHBoxLayout()
-        btn_add_att = QPushButton("افزودن پیوست جدید +")
-        btn_add_att.clicked.connect(self.upload_attachment)
-
-        btn_open_att = QPushButton("باز کردن فایل پیوست")
-        btn_open_att.setProperty("accent", "true")
-        btn_open_att.clicked.connect(self.open_selected_attachment)
-
+        btn_add_att = QPushButton("افزودن مدرک / پیوست جدید +")
+        btn_add_att.setProperty("accent", "true")
+        btn_add_att.clicked.connect(self.upload_attachment_dialog)
         h_att_btn.addWidget(btn_add_att)
-        h_att_btn.addWidget(btn_open_att)
-
-        att_lay.addWidget(self.list_att)
+        h_att_btn.addStretch()
         att_lay.addLayout(h_att_btn)
+
+        self.tbl_att = QTableWidget()
+        self.tbl_att.setColumnCount(5)
+        self.tbl_att.setHorizontalHeaderLabels(["ردیف", "عنوان مدرک / نوع برگه", "نام فایل", "تاریخ بارگذاری", "عملیات"])
+        for col in range(4):
+            self.tbl_att.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
+        self.tbl_att.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.tbl_att.doubleClicked.connect(self.open_selected_attachment_row)
+
+        att_lay.addWidget(self.tbl_att)
         self.load_attachments()
         tabs.addTab(tab_att, "مدارک و پیوست‌ها")
 
@@ -615,33 +639,161 @@ class StudentProfileDialog(QDialog):
             self.tbl_terms.setItem(row, 1, QTableWidgetItem(gregorian_to_shamsi(t["enrolled_at"])))
 
     def load_attachments(self):
-        self.list_att.clear()
         atts = self.attachment_repo.list_attachments(self.student_id)
-        for a in atts:
-            fname = os.path.basename(a["file_path"])
-            item = QListWidgetItem(f"{fname} ({gregorian_to_shamsi(a['uploaded_at'])})")
-            item.setData(Qt.UserRole, a["file_path"])
-            self.list_att.addItem(item)
+        self.tbl_att.setRowCount(len(atts))
 
-    def upload_attachment(self):
-        fpath, _ = QFileDialog.getOpenFileName(self, "انتخاب فایل پیوست", "", "All Files (*.*)")
-        if fpath:
-            self.attachment_repo.add_attachment(self.student_id, fpath)
+        for row, a in enumerate(atts):
+            # Row index
+            self.tbl_att.setItem(row, 0, QTableWidgetItem(to_persian_digits(row + 1)))
+
+            # Document Category
+            cat_text = a.get("category") or "سایر مدارک"
+            self.tbl_att.setItem(row, 1, QTableWidgetItem(cat_text))
+
+            # File name
+            fname = os.path.basename(a["file_path"])
+            self.tbl_att.setItem(row, 2, QTableWidgetItem(fname))
+
+            # Upload Date
+            self.tbl_att.setItem(row, 3, QTableWidgetItem(gregorian_to_shamsi(a["uploaded_at"])))
+
+            # Actions panel: Open, Rename, Delete
+            pnl = QWidget()
+            lay = QHBoxLayout(pnl)
+            lay.setContentsMargins(0, 0, 0, 0)
+
+            btn_open = QPushButton("نمایش")
+            btn_edit = QPushButton("ویرایش/تغییرنام")
+            btn_del = QPushButton("حذف")
+            btn_del.setStyleSheet("color: #C0392B; font-weight: bold;")
+
+            att_id = a["id"]
+            fpath = a["file_path"]
+            cat = cat_text
+
+            btn_open.clicked.connect(lambda _, fp=fpath: self.open_file_path(fp))
+            btn_edit.clicked.connect(lambda _, id=att_id, c=cat, fp=fpath: self.edit_attachment_dialog(id, c, fp))
+            btn_del.clicked.connect(lambda _, id=att_id: self.delete_attachment_action(id))
+
+            lay.addWidget(btn_open)
+            lay.addWidget(btn_edit)
+            lay.addWidget(btn_del)
+            self.tbl_att.setCellWidget(row, 4, pnl)
+
+    def upload_attachment_dialog(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("بارگذاری مدرک و پیوست جدید")
+        dlg.resize(450, 200)
+        form = QFormLayout(dlg)
+
+        cmb_cat = QComboBox()
+        cmb_cat.addItem("۱. برگه اول شناسنامه", "برگه اول شناسنامه")
+        cmb_cat.addItem("۲. تصویر دانش‌آموز", "تصویر دانش‌آموز")
+        cmb_cat.addItem("۳. برگه ثبت‌نام", "برگه ثبت‌نام")
+        cmb_cat.addItem("۴. برگه رضایت والدین", "برگه رضایت والدین")
+        cmb_cat.addItem("۵. سایر مدارک", "سایر مدارک")
+
+        txt_file = QLineEdit()
+        txt_file.setReadOnly(True)
+        btn_browse = QPushButton("انتخاب فایل...")
+
+        h_file = QHBoxLayout()
+        h_file.addWidget(txt_file, 3)
+        h_file.addWidget(btn_browse, 1)
+
+        def browse():
+            fpath, _ = QFileDialog.getOpenFileName(dlg, "انتخاب تصویر یا مدرک", "", "All Files (*.*);;Images (*.png *.jpg *.jpeg *.bmp)")
+            if fpath:
+                txt_file.setText(fpath)
+
+        btn_browse.clicked.connect(browse)
+
+        form.addRow("عنوان / نوع مدرک:", cmb_cat)
+        form.addRow("مسیر فایل:", h_file)
+
+        btn_save = QPushButton("بارگذاری مدرک")
+        btn_save.setProperty("accent", "true")
+        form.addRow(btn_save)
+
+        def save():
+            fp = txt_file.text().strip()
+            if not fp:
+                QMessageBox.warning(dlg, "خطا", "لطفاً ابتدا فایل مدرک را انتخاب کنید.")
+                return
+            cat = cmb_cat.currentData()
+            self.attachment_repo.add_attachment(self.student_id, fp, category=cat)
+            QMessageBox.information(dlg, "موفقیت", "مدرک با موفقیت اضافه شد.")
+            dlg.accept()
             self.load_attachments()
 
-    def open_attachment_item(self, item):
-        fpath = item.data(Qt.UserRole)
-        if fpath and os.path.exists(fpath):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(fpath))
+        btn_save.clicked.connect(save)
+        dlg.exec()
+
+    def edit_attachment_dialog(self, att_id: int, current_cat: str, current_path: str):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("ویرایش عنوان و تغییر فایل مدرک")
+        dlg.resize(450, 200)
+        form = QFormLayout(dlg)
+
+        cmb_cat = QComboBox()
+        cmb_cat.addItem("۱. برگه اول شناسنامه", "برگه اول شناسنامه")
+        cmb_cat.addItem("۲. تصویر دانش‌آموز", "تصویر دانش‌آموز")
+        cmb_cat.addItem("۳. برگه ثبت‌نام", "برگه ثبت‌نام")
+        cmb_cat.addItem("۴. برگه رضایت والدین", "برگه رضایت والدین")
+        cmb_cat.addItem("۵. سایر مدارک", "سایر مدارک")
+
+        idx = cmb_cat.findData(current_cat)
+        if idx >= 0:
+            cmb_cat.setCurrentIndex(idx)
+
+        txt_file = QLineEdit(current_path)
+        btn_browse = QPushButton("تغییر فایل...")
+
+        h_file = QHBoxLayout()
+        h_file.addWidget(txt_file, 3)
+        h_file.addWidget(btn_browse, 1)
+
+        def browse():
+            fpath, _ = QFileDialog.getOpenFileName(dlg, "انتخاب فایل مدرک جدید", "", "All Files (*.*)")
+            if fpath:
+                txt_file.setText(fpath)
+
+        btn_browse.clicked.connect(browse)
+
+        form.addRow("عنوان مدرک:", cmb_cat)
+        form.addRow("مسیر فایل:", h_file)
+
+        btn_save = QPushButton("ذخیره تغییرات")
+        btn_save.setProperty("accent", "true")
+        form.addRow(btn_save)
+
+        def save():
+            fp = txt_file.text().strip()
+            if not fp:
+                return
+            self.attachment_repo.update_attachment(att_id, cmb_cat.currentData(), fp)
+            dlg.accept()
+            self.load_attachments()
+
+        btn_save.clicked.connect(save)
+        dlg.exec()
+
+    def delete_attachment_action(self, att_id: int):
+        if QMessageBox.question(self, "تأیید حذف", "آیا از حذف این مدرک اطمینان دارید؟") == QMessageBox.Yes:
+            self.attachment_repo.delete_attachment(att_id)
+            self.load_attachments()
+
+    def open_file_path(self, file_path: str):
+        if file_path and os.path.exists(file_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(file_path))
         else:
             QMessageBox.warning(self, "خطا", "فایل مورد نظر در مسیر مربوطه یافت نشد.")
 
-    def open_selected_attachment(self):
-        curr = self.list_att.currentItem()
-        if curr:
-            self.open_attachment_item(curr)
-        else:
-            QMessageBox.warning(self, "خطا", "لطفاً یک فایل پیوست را انتخاب کنید.")
+    def open_selected_attachment_row(self, index):
+        row = index.row()
+        atts = self.attachment_repo.list_attachments(self.student_id)
+        if 0 <= row < len(atts):
+            self.open_file_path(atts[row]["file_path"])
 
     def load_audit_trail(self):
         logs = self.audit_repo.get_logs_for_entity("student", self.student_id)

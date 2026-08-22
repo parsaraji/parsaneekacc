@@ -955,13 +955,13 @@ class AttachmentRepository:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path
 
-    def add_attachment(self, student_id: int, file_path: str, file_type: str = "doc") -> int:
+    def add_attachment(self, student_id: int, file_path: str, category: str = "سایر مدارک", file_type: str = "doc") -> int:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor.execute(
-            "INSERT INTO attachments (student_id, file_path, file_type, uploaded_at) VALUES (?, ?, ?, ?)",
-            (student_id, file_path, file_type, now)
+            "INSERT INTO attachments (student_id, category, file_path, file_type, uploaded_at) VALUES (?, ?, ?, ?, ?)",
+            (student_id, category, file_path, file_type, now)
         )
         att_id = cursor.lastrowid
         conn.commit()
@@ -971,10 +971,37 @@ class AttachmentRepository:
     def list_attachments(self, student_id: int) -> List[Dict[str, Any]]:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM attachments WHERE student_id = ? ORDER BY id DESC", (student_id,))
-        rows = cursor.fetchall()
+        try:
+            cursor.execute("SELECT * FROM attachments WHERE student_id = ? ORDER BY id ASC", (student_id,))
+            rows = cursor.fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            # Fallback if category column migration pending
+            cursor.execute("SELECT * FROM attachments WHERE student_id = ? ORDER BY id ASC", (student_id,))
+            rows = cursor.fetchall()
+            res = []
+            for r in rows:
+                d = dict(r)
+                if "category" not in d:
+                    d["category"] = "سایر مدارک"
+                res.append(d)
+            return res
+        finally:
+            conn.close()
+
+    def update_attachment(self, att_id: int, category: str, file_path: str) -> None:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE attachments SET category = ?, file_path = ? WHERE id = ?", (category, file_path, att_id))
+        conn.commit()
         conn.close()
-        return [dict(r) for r in rows]
+
+    def delete_attachment(self, att_id: int) -> None:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM attachments WHERE id = ?", (att_id,))
+        conn.commit()
+        conn.close()
 
 
 class BookRepository:

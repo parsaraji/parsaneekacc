@@ -202,6 +202,7 @@ def init_db(db_path: Optional[str] = None) -> None:
     CREATE TABLE IF NOT EXISTS attachments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         student_id INTEGER NOT NULL,
+        category TEXT DEFAULT 'سایر مدارک',
         file_path TEXT NOT NULL,
         file_type TEXT,
         uploaded_at TEXT NOT NULL,
