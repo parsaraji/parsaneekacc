@@ -411,10 +411,12 @@ class ReportsWidget(QWidget):
             ("درآمد حاصل از دستگاه کارت‌خوان (POS)", fin["income_pos"]),
             ("درآمد حاصل از واریز کارت به کارت", fin["income_card_to_card"]),
             ("درآمد شهریه کلاس‌ها", fin.get("income_tuition", 0.0)),
-            ("درآمد فروش کتاب و کالاها", fin.get("total_book_sales", 0.0)),
+            ("درآمد فروش کتاب و کالاها (فروش ناخالص)", fin.get("total_book_sales", 0.0)),
+            ("بهای تمام شده کتاب‌های فروخته شده (قیمت خرید)", fin.get("book_cogs_cost", 0.0)),
+            ("سود ناخالص انبار و فروش کتاب", fin.get("book_gross_profit", 0.0)),
             ("درآمد خدمات جانبی و متفرقه", fin.get("income_other", 0.0)),
             ("مجموع کل درآمدهای وصول‌شده", fin["total_income"]),
-            ("کل هزینه‌ها و برداشت‌های ثبت‌شده", fin["total_expenses"]),
+            ("کل هزینه‌ها و برداشت‌های عملیاتی ثبت‌شده", fin["total_expenses"]),
             ("سود / زیان خالص آموزشگاه", fin["net_income"]),
             ("مجموع بدهی‌های معوق قابل وصول دانش‌آموزان", fin["total_outstanding_debt"])
         ]
@@ -423,7 +425,9 @@ class ReportsWidget(QWidget):
         for r, (title, amt) in enumerate(pnl_items):
             self.tbl_pnl.setItem(r, 0, QTableWidgetItem(title))
             item_val = QTableWidgetItem(format_currency(amt))
-            if "سود" in title:
+            if "سود ناخالص" in title:
+                item_val.setForeground(Qt.blue)
+            elif "سود / زیان خالص" in title:
                 item_val.setForeground(Qt.blue if amt >= 0 else Qt.red)
             elif "مجموع کل درآمد" in title:
                 item_val.setForeground(Qt.darkGreen)

@@ -233,7 +233,9 @@ class StudentProfileDialog(QDialog):
         self.tbl_pending = QTableWidget()
         self.tbl_pending.setColumnCount(5)
         self.tbl_pending.setHorizontalHeaderLabels(["تاریخ ثبت بدهی", "شرح و بابت بدهی", "مبلغ بدهی (تومان)", "وضعیت", "عملیات"])
-        self.tbl_pending.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        for col in range(4):
+            self.tbl_pending.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
+        self.tbl_pending.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         sum_layout.addWidget(self.tbl_pending)
 
         # 2. Paid Payments Table
@@ -334,11 +336,65 @@ class StudentProfileDialog(QDialog):
             self.tbl_pending.setItem(r, 2, amt_item)
             self.tbl_pending.setItem(r, 3, QTableWidgetItem("معوق / تسویه‌نشده"))
 
+            btn_pnl = QWidget()
+            btn_lay = QHBoxLayout(btn_pnl)
+            btn_lay.setContentsMargins(0, 0, 0, 0)
+
+            btn_disc = QPushButton("ثبت تخفیف")
+            btn_disc.setStyleSheet("background-color: #E67E22; color: white; font-weight: bold; border-radius: 4px; padding: 3px 8px;")
             btn_del = QPushButton("حذف این بدهی")
             btn_del.setStyleSheet("color: #C0392B; font-weight: bold;")
+
             p_id = p["id"]
+            p_amt = p["amount"]
+            btn_disc.clicked.connect(lambda _, id=p_id, a=p_amt: self.apply_debt_discount_dialog(id, a))
             btn_del.clicked.connect(lambda _, id=p_id: self.delete_debt(id))
-            self.tbl_pending.setCellWidget(r, 4, btn_del)
+
+            btn_lay.addWidget(btn_disc)
+            btn_lay.addWidget(btn_del)
+            self.tbl_pending.setCellWidget(r, 4, btn_pnl)
+
+    def apply_debt_discount_dialog(self, debt_id: int, current_amount: float):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("ثبت و اعمال تخفیف روی بدهی دانش‌آموز")
+        dlg.resize(380, 200)
+        form = QFormLayout(dlg)
+
+        lbl_info = QLabel(f"مبلغ بدهی فعلی: {format_currency(current_amount)}")
+        lbl_info.setStyleSheet("font-weight: bold; color: #2C3E50;")
+        form.addRow(lbl_info)
+
+        spn_disc_amt = QDoubleSpinBox()
+        spn_disc_amt.setRange(0, current_amount)
+        spn_disc_amt.setSingleStep(10000)
+        spn_disc_amt.setDecimals(0)
+
+        spn_disc_pct = QDoubleSpinBox()
+        spn_disc_pct.setRange(0, 100)
+        spn_disc_pct.setSingleStep(5)
+        spn_disc_pct.setSuffix("%")
+
+        form.addRow("مبلغ تخفیف ثابت (تومان):", spn_disc_amt)
+        form.addRow("یا درصد تخفیف:", spn_disc_pct)
+
+        btn_save = QPushButton("اعمال تخفیف")
+        btn_save.setProperty("accent", "true")
+        form.addRow(btn_save)
+
+        def save():
+            amt = spn_disc_amt.value()
+            pct = spn_disc_pct.value()
+            if amt <= 0 and pct <= 0:
+                QMessageBox.warning(dlg, "خطا", "لطفاً مبلغ یا درصد تخفیف معتبر وارد کنید.")
+                return
+
+            self.payment_repo.apply_discount_to_debt(debt_id, discount_amount=amt, discount_percent=pct)
+            QMessageBox.information(dlg, "موفقیت", "تخفیف با موفقیت روی این بدهی اعمال گردید و تراز دانش‌آموز بروز شد.")
+            dlg.accept()
+            self.load_financial_ledgers()
+
+        btn_save.clicked.connect(save)
+        dlg.exec()
 
         # Populate Paid Payments Table
         self.tbl_paid.setRowCount(len(paid_list))
@@ -629,7 +685,9 @@ class StudentManagementWidget(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(["کد", "نام و نام خانوادگی", "نام پدر", "شماره تماس اصلی", "بدهی معوق", "وضعیت", "عملیات"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        for col in range(6):
+            self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.doubleClicked.connect(self.view_profile)
 
@@ -811,7 +869,10 @@ class TermClassManagementWidget(QWidget):
         self.tbl_classes = QTableWidget()
         self.tbl_classes.setColumnCount(9)
         self.tbl_classes.setHorizontalHeaderLabels(["کد", "نام کلاس", "استاد", "وضعیت کلاس", "شهریه", "کتاب", "ظرفیت / ثبت‌نام", "مدیریت کلاس", "لیست"])
-        self.tbl_classes.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        for col in range(7):
+            self.tbl_classes.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
+        self.tbl_classes.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
+        self.tbl_classes.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeToContents)
         c_layout.addWidget(self.tbl_classes)
         tabs.addTab(self.tab_classes, "مدیریت کلاس‌ها")
 

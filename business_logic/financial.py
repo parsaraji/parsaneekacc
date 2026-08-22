@@ -112,7 +112,7 @@ class FinancialEngine:
 
         total_income = sum(income_by_method.values())
 
-        # Category breakdowns
+        # Category breakdowns for revenue
         cursor.execute(
             """SELECT pt.name, SUM(p.amount) FROM payments p
                JOIN payment_types pt ON p.payment_type_id = pt.id
@@ -120,8 +120,17 @@ class FinancialEngine:
         )
         cat_income = {row[0]: row[1] or 0.0 for row in cursor.fetchall()}
 
-        # Expenses
-        sql_exp = "SELECT SUM(amount) FROM expenses WHERE 1=1"
+        # Calculate Book COGS Purchase Cost (sum of book purchase price for sold books)
+        cursor.execute(
+            """SELECT SUM(b.purchase_price) FROM payments p
+               JOIN payment_types pt ON p.payment_type_id = pt.id
+               JOIN books b ON p.description LIKE '%' || b.title || '%'
+               WHERE p.status = 'paid' AND pt.name = 'کتاب'"""
+        )
+        book_cogs_cost = cursor.fetchone()[0] or 0.0
+
+        # Expenses breakdown by category
+        sql_exp = "SELECT category, SUM(amount) FROM expenses WHERE 1=1"
         params_exp = []
         if date_from:
             sql_exp += " AND date >= ?"
@@ -129,9 +138,12 @@ class FinancialEngine:
         if date_to:
             sql_exp += " AND date <= ?"
             params_exp.append(date_to)
+        sql_exp += " GROUP BY category"
 
         cursor.execute(sql_exp, params_exp)
-        total_expenses = cursor.fetchone()[0] or 0.0
+        exp_by_cat = {row[0]: row[1] or 0.0 for row in cursor.fetchall()}
+
+        total_expenses = sum(exp_by_cat.values())
 
         # Total outstanding debt
         cursor.execute("SELECT SUM(amount) FROM payments WHERE status IN ('pending', 'partial')")
@@ -139,15 +151,21 @@ class FinancialEngine:
 
         conn.close()
 
+        total_book_sales = cat_income.get("کتاب", 0.0)
+        book_gross_profit = total_book_sales - book_cogs_cost
+
         return {
             "total_income": total_income,
             "income_cash": income_by_method["cash"],
             "income_pos": income_by_method["pos"],
             "income_card_to_card": income_by_method["card_to_card"],
             "income_tuition": cat_income.get("شهریه", 0.0),
-            "total_book_sales": cat_income.get("کتاب", 0.0),
+            "total_book_sales": total_book_sales,
+            "book_cogs_cost": book_cogs_cost,
+            "book_gross_profit": book_gross_profit,
             "income_other": cat_income.get("هزینه‌های جانبی", 0.0),
             "total_expenses": total_expenses,
+            "expenses_breakdown": exp_by_cat,
             "net_income": total_income - total_expenses,
             "total_outstanding_debt": total_outstanding_debt
         }

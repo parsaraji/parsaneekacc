@@ -857,6 +857,33 @@ class PaymentRepository:
         conn.commit()
         conn.close()
 
+    def apply_discount_to_debt(self, payment_id: int, discount_amount: float = 0.0, discount_percent: float = 0.0) -> None:
+        """Applies a discount to an existing pending debt record, updating discount fields and reducing remaining amount."""
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT amount, discount_amount FROM payments WHERE id = ?", (payment_id,))
+        row = cursor.fetchone()
+        if row:
+            curr_amt = row["amount"]
+            calc_disc = discount_amount
+            if discount_percent > 0:
+                calc_disc += (curr_amt * (discount_percent / 100.0))
+
+            if calc_disc >= curr_amt:
+                new_amt = 0.0
+                status = "paid"
+            else:
+                new_amt = curr_amt - calc_disc
+                status = "pending"
+
+            cursor.execute(
+                """UPDATE payments SET amount = ?, discount_amount = discount_amount + ?, discount_percent = discount_percent + ?, status = ?
+                   WHERE id = ?""",
+                (new_amt, calc_disc, discount_percent, status, payment_id)
+            )
+            conn.commit()
+        conn.close()
+
     def get_payment_by_id(self, payment_id: int) -> Optional[Dict[str, Any]]:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
