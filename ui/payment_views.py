@@ -179,10 +179,14 @@ class RecordPaymentDialog(QDialog):
     def on_student_changed(self):
         st_id = self.cmb_student.currentData()
         self.pending_debts = []
+        total_debt_amount = 0.0
         if st_id:
             all_p = self.payment_repo.list_payments(student_id=st_id, limit=300)
             self.pending_debts = [p for p in all_p if p["status"] == "pending"]
+            fin = self.financial_engine.get_student_financial_summary(st_id)
+            total_debt_amount = fin.get("total_pending_debt", 0.0)
 
+        self.box_debts.setTitle(f"۱. تسویه بدهی‌های معوق (مبلغ کل بدهی معوق این دانش‌آموز: {format_currency(total_debt_amount)})")
         self.refresh_debts_table()
 
     def refresh_debts_table(self):
@@ -417,13 +421,17 @@ class PaymentsAndInvoicingWidget(QWidget):
         self.table.setHorizontalHeaderLabels([
             "انتخاب", "کد فاکتور", "دانش‌آموز", "بابت", "مبلغ", "روش پرداخت", "تاریخ", "عملیات"
         ])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        for col in range(7):
+            self.table.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeToContents)
         layout.addWidget(self.table)
 
         self.load_payments()
 
     def load_payments(self):
-        payments = self.payment_repo.list_payments(limit=300)
+        all_payments = self.payment_repo.list_payments(limit=500)
+        # Filter payments tab list to show ONLY paid transactions with invoices (excluding pending debts)
+        payments = [p for p in all_payments if p.get("status") == "paid"]
         self.table.setRowCount(len(payments))
 
         currency_unit = self.config_repo.get_setting("currency_unit", "toman")
@@ -448,18 +456,20 @@ class PaymentsAndInvoicingWidget(QWidget):
 
             self.table.setItem(row, 1, QTableWidgetItem(inv_code))
             self.table.setItem(row, 2, QTableWidgetItem(p["student_name"]))
-            self.table.setItem(row, 3, QTableWidgetItem(p["payment_type_name"]))
+
+            desc = p.get("description") or p.get("payment_type_name", "پرداخت")
+            self.table.setItem(row, 3, QTableWidgetItem(desc))
 
             fmt_amt = format_currency(p["amount"], currency_unit, use_persian)
             amt_item = QTableWidgetItem(fmt_amt)
-            if p["status"] == "pending":
-                amt_item.setForeground(Qt.red)
+            amt_item.setForeground(Qt.darkGreen)
             self.table.setItem(row, 4, amt_item)
 
             self.table.setItem(row, 5, QTableWidgetItem(method_map.get(p["method"], p["method"])))
             self.table.setItem(row, 6, QTableWidgetItem(gregorian_to_shamsi(p["paid_date"])))
 
-            btn_single_print = QPushButton("چاپ")
+            btn_single_print = QPushButton("چاپ فاکتور")
+            btn_single_print.setProperty("accent", "true")
             p_id = p["id"]
             btn_single_print.clicked.connect(lambda _, id=p_id: self.print_single_invoice(id))
             self.table.setCellWidget(row, 7, btn_single_print)

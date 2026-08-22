@@ -400,12 +400,25 @@ class StudentProfileDialog(QDialog):
         self.tbl_paid.setRowCount(len(paid_list))
         method_map = {"cash": "نقد", "pos": "کارت‌خوان", "card_to_card": "کارت به کارت"}
         for r, p in enumerate(paid_list):
-            self.tbl_paid.setItem(r, 0, QTableWidgetItem(gregorian_to_shamsi(p["paid_date"])))
-            desc = p.get("description") or p.get("payment_type_name", "پرداخت")
-            self.tbl_paid.setItem(r, 1, QTableWidgetItem(desc))
-            self.tbl_paid.setItem(r, 2, QTableWidgetItem(method_map.get(p["method"], p["method"])))
-            self.tbl_paid.setItem(r, 3, QTableWidgetItem(format_currency(p["amount"])))
-            self.tbl_paid.setItem(r, 4, QTableWidgetItem(p.get("bank_reference_number") or p.get("unique_code") or "-"))
+            date_str = f"{gregorian_to_shamsi(p['paid_date'])} {p.get('paid_time', '')}".strip()
+            self.tbl_paid.setItem(r, 0, QTableWidgetItem(date_str))
+
+            exact_desc = p.get("description") or p.get("payment_type_name", "پرداختی وصول‌شده")
+            self.tbl_paid.setItem(r, 1, QTableWidgetItem(exact_desc))
+
+            m_text = method_map.get(p["method"], p["method"])
+            if p.get("pos_device_label"):
+                m_text += f" ({p['pos_device_label']})"
+            elif p.get("card_destination_number"):
+                m_text += f" ({p.get('card_destination_owner', '')} - {p['card_destination_number']})"
+            self.tbl_paid.setItem(r, 2, QTableWidgetItem(m_text))
+
+            amt_item = QTableWidgetItem(format_currency(p["amount"]))
+            amt_item.setForeground(Qt.darkGreen)
+            self.tbl_paid.setItem(r, 3, amt_item)
+
+            track_code = p.get("bank_reference_number") or p.get("invoice_code") or p.get("unique_code") or "-"
+            self.tbl_paid.setItem(r, 4, QTableWidgetItem(track_code))
 
     def add_inventory_item_charge(self):
         b_repo = BookRepository(self.db_path)
