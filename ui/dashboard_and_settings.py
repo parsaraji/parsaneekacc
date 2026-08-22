@@ -410,8 +410,10 @@ class ReportsWidget(QWidget):
             ("درآمد حاصل از دریافت نقد", fin["income_cash"]),
             ("درآمد حاصل از دستگاه کارت‌خوان (POS)", fin["income_pos"]),
             ("درآمد حاصل از واریز کارت به کارت", fin["income_card_to_card"]),
+            ("درآمد شهریه کلاس‌ها", fin.get("income_tuition", 0.0)),
+            ("درآمد فروش کتاب و کالاها", fin.get("total_book_sales", 0.0)),
+            ("درآمد خدمات جانبی و متفرقه", fin.get("income_other", 0.0)),
             ("مجموع کل درآمدهای وصول‌شده", fin["total_income"]),
-            ("فروش کل کتاب‌ها", fin.get("total_book_sales", 0.0)),
             ("کل هزینه‌ها و برداشت‌های ثبت‌شده", fin["total_expenses"]),
             ("سود / زیان خالص آموزشگاه", fin["net_income"]),
             ("مجموع بدهی‌های معوق قابل وصول دانش‌آموزان", fin["total_outstanding_debt"])
@@ -423,6 +425,8 @@ class ReportsWidget(QWidget):
             item_val = QTableWidgetItem(format_currency(amt))
             if "سود" in title:
                 item_val.setForeground(Qt.blue if amt >= 0 else Qt.red)
+            elif "مجموع کل درآمد" in title:
+                item_val.setForeground(Qt.darkGreen)
             self.tbl_pnl.setItem(r, 1, item_val)
 
     def load_term_debtors(self):
@@ -457,6 +461,9 @@ class ReportsWidget(QWidget):
                     ["درآمد حاصل از دریافت نقد", fin["income_cash"]],
                     ["درآمد حاصل از دستگاه کارت‌خوان (POS)", fin["income_pos"]],
                     ["درآمد حاصل از واریز کارت به کارت", fin["income_card_to_card"]],
+                    ["درآمد شهریه کلاس‌ها", fin.get("income_tuition", 0.0)],
+                    ["درآمد فروش کتاب و کالاها", fin.get("total_book_sales", 0.0)],
+                    ["درآمد خدمات جانبی و متفرقه", fin.get("income_other", 0.0)],
                     ["مجموع کل درآمدهای وصول‌شده", fin["total_income"]],
                     ["کل هزینه‌ها و برداشت‌های ثبت‌شده", fin["total_expenses"]],
                     ["سود / زیان خالص آموزشگاه", fin["net_income"]],

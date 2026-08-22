@@ -112,13 +112,13 @@ class FinancialEngine:
 
         total_income = sum(income_by_method.values())
 
-        # Book sales revenue vs book purchase cost calculations
+        # Category breakdowns
         cursor.execute(
-            """SELECT SUM(p.amount) FROM payments p
+            """SELECT pt.name, SUM(p.amount) FROM payments p
                JOIN payment_types pt ON p.payment_type_id = pt.id
-               WHERE p.status = 'paid' AND pt.name = 'کتاب'"""
+               WHERE p.status = 'paid' GROUP BY pt.name"""
         )
-        total_book_sales = cursor.fetchone()[0] or 0.0
+        cat_income = {row[0]: row[1] or 0.0 for row in cursor.fetchall()}
 
         # Expenses
         sql_exp = "SELECT SUM(amount) FROM expenses WHERE 1=1"
@@ -144,7 +144,9 @@ class FinancialEngine:
             "income_cash": income_by_method["cash"],
             "income_pos": income_by_method["pos"],
             "income_card_to_card": income_by_method["card_to_card"],
-            "total_book_sales": total_book_sales,
+            "income_tuition": cat_income.get("شهریه", 0.0),
+            "total_book_sales": cat_income.get("کتاب", 0.0),
+            "income_other": cat_income.get("هزینه‌های جانبی", 0.0),
             "total_expenses": total_expenses,
             "net_income": total_income - total_expenses,
             "total_outstanding_debt": total_outstanding_debt

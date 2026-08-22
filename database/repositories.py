@@ -379,6 +379,29 @@ class ClassRepository:
         conn.commit()
         conn.close()
 
+    def toggle_class_status(self, class_id: int) -> str:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT status FROM classes WHERE id = ?", (class_id,))
+        row = cursor.fetchone()
+        if row:
+            new_status = "closed" if row["status"] == "active" else "active"
+            cursor.execute("UPDATE classes SET status = ? WHERE id = ?", (new_status, class_id))
+            conn.commit()
+            conn.close()
+            return new_status
+        conn.close()
+        return "active"
+
+    def delete_class(self, class_id: int) -> None:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM class_books WHERE class_id = ?", (class_id,))
+        cursor.execute("DELETE FROM class_enrollments WHERE class_id = ?", (class_id,))
+        cursor.execute("DELETE FROM classes WHERE id = ?", (class_id,))
+        conn.commit()
+        conn.close()
+
     def get_class_books(self, class_id: int) -> List[Dict[str, Any]]:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()

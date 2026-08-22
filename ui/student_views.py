@@ -777,7 +777,7 @@ class StudentPickerDialog(QDialog):
 
 
 class TermClassManagementWidget(QWidget):
-    """Terms and Classes Management View with tuition, book and other fees."""
+    """Class and Inventory Management View with tuition, book and other fees."""
     def __init__(self, db_path=None, parent=None):
         super().__init__(parent)
         self.db_path = db_path
@@ -790,45 +790,37 @@ class TermClassManagementWidget(QWidget):
         layout = QVBoxLayout(self)
 
         top_bar = QHBoxLayout()
-        self.btn_new_term = QPushButton("ترم جدید +")
-        self.btn_new_term.clicked.connect(self.add_term)
-
-        self.btn_new_class = QPushButton("کلاس جدید +")
+        self.btn_new_class = QPushButton("تشکیل کلاس جدید +")
         self.btn_new_class.setProperty("accent", "true")
         self.btn_new_class.clicked.connect(self.add_class)
 
-        top_bar.addWidget(self.btn_new_term)
+        btn_refresh_classes = QPushButton("بروزرسانی لیست کلاس‌ها")
+        btn_refresh_classes.clicked.connect(self.load_classes)
+
         top_bar.addWidget(self.btn_new_class)
+        top_bar.addWidget(btn_refresh_classes)
         top_bar.addStretch()
 
         layout.addLayout(top_bar)
 
         tabs = QTabWidget()
 
+        # Tab 1: Class List
         self.tab_classes = QWidget()
         c_layout = QVBoxLayout(self.tab_classes)
         self.tbl_classes = QTableWidget()
-        self.tbl_classes.setColumnCount(8)
-        self.tbl_classes.setHorizontalHeaderLabels(["کد", "نام کلاس", "استاد", "ترم", "شهریه", "کتاب", "ظرفیت / ثبت‌نام", "عملیات"])
+        self.tbl_classes.setColumnCount(9)
+        self.tbl_classes.setHorizontalHeaderLabels(["کد", "نام کلاس", "استاد", "وضعیت کلاس", "شهریه", "کتاب", "ظرفیت / ثبت‌نام", "مدیریت کلاس", "لیست"])
         self.tbl_classes.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         c_layout.addWidget(self.tbl_classes)
-        tabs.addTab(self.tab_classes, "لیست کلاس‌ها")
+        tabs.addTab(self.tab_classes, "مدیریت کلاس‌ها")
 
-        self.tab_terms = QWidget()
-        t_layout = QVBoxLayout(self.tab_terms)
-        self.tbl_terms = QTableWidget()
-        self.tbl_terms.setColumnCount(5)
-        self.tbl_terms.setHorizontalHeaderLabels(["نام ترم", "تاریخ شروع", "تاریخ پایان", "وضعیت", "تغییر وضعیت"])
-        self.tbl_terms.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        t_layout.addWidget(self.tbl_terms)
-        tabs.addTab(self.tab_terms, "لیست ترم‌ها")
-
-        # Tab 3: Book Inventory Management (مدیریت انبار کتاب)
+        # Tab 2: Book Inventory Management (مدیریت انبار کتاب)
         self.tab_books = QWidget()
         b_layout = QVBoxLayout(self.tab_books)
 
         b_top = QHBoxLayout()
-        btn_add_book = QPushButton("افزودن کتاب جدید به انبار +")
+        btn_add_book = QPushButton("افزودن کتاب/کالا جدید به انبار +")
         btn_add_book.setProperty("accent", "true")
         btn_add_book.clicked.connect(self.add_book_dialog)
 
@@ -842,14 +834,13 @@ class TermClassManagementWidget(QWidget):
 
         self.tbl_books = QTableWidget()
         self.tbl_books.setColumnCount(5)
-        self.tbl_books.setHorizontalHeaderLabels(["عنوان کتاب", "قیمت خرید (تومان)", "قیمت فروش (تومان)", "موجودی انبار", "عملیات"])
+        self.tbl_books.setHorizontalHeaderLabels(["عنوان کتاب / کالا", "قیمت خرید (تومان)", "قیمت فروش (تومان)", "موجودی انبار", "عملیات"])
         self.tbl_books.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         b_layout.addWidget(self.tbl_books)
-        tabs.addTab(self.tab_books, "انبار کتاب‌ها")
+        tabs.addTab(self.tab_books, "انبار کتاب‌ها و کالاها")
 
         layout.addWidget(tabs)
 
-        self.load_terms()
         self.load_classes()
         self.load_books()
 
@@ -983,27 +974,57 @@ class TermClassManagementWidget(QWidget):
             self.tbl_classes.setItem(r, 0, QTableWidgetItem(c["code"]))
             self.tbl_classes.setItem(r, 1, QTableWidgetItem(c["name"]))
             self.tbl_classes.setItem(r, 2, QTableWidgetItem(c.get("teacher_name") or "-"))
-            self.tbl_classes.setItem(r, 3, QTableWidgetItem(c.get("term_name") or "-"))
+
+            st_text = "درحال برگزاری" if c.get("status") == "active" else "بسته‌شده / خاتمه‌یافته"
+            st_item = QTableWidgetItem(st_text)
+            if c.get("status") == "active":
+                st_item.setForeground(Qt.blue)
+            else:
+                st_item.setForeground(Qt.gray)
+            self.tbl_classes.setItem(r, 3, st_item)
+
             self.tbl_classes.setItem(r, 4, QTableWidgetItem(format_currency(c.get("tuition_fee", 0))))
             self.tbl_classes.setItem(r, 5, QTableWidgetItem(format_currency(c.get("book_fee", 0))))
 
             cap_str = f"{c['enrolled_count']} / {c['capacity']}"
             self.tbl_classes.setItem(r, 6, QTableWidgetItem(to_persian_digits(cap_str)))
 
-            btn_panel = QWidget()
-            btn_lay = QHBoxLayout(btn_panel)
-            btn_lay.setContentsMargins(2, 2, 2, 2)
-
-            btn_edit_cls = QPushButton("ویرایش")
-            btn_roster = QPushButton("لیست کلاس")
+            # Management action buttons: Edit, Close/Open, Delete
             c_id = c["id"]
-            btn_edit_cls.clicked.connect(lambda _, id=c_id: self.edit_class_dialog(id))
+            btn_pnl = QWidget()
+            btn_lay = QHBoxLayout(btn_pnl)
+            btn_lay.setContentsMargins(0, 0, 0, 0)
+
+            btn_edit = QPushButton("ویرایش")
+            btn_toggle = QPushButton("بستن کلاس" if c.get("status") == "active" else "باز کردن")
+            btn_del = QPushButton("حذف")
+            btn_del.setStyleSheet("color: #C0392B; font-weight: bold;")
+
+            btn_edit.clicked.connect(lambda _, id=c_id: self.edit_class_dialog(id))
+            btn_toggle.clicked.connect(lambda _, id=c_id: self.toggle_class_status(id))
+            btn_del.clicked.connect(lambda _, id=c_id: self.delete_class_dialog(id))
+
+            btn_lay.addWidget(btn_edit)
+            btn_lay.addWidget(btn_toggle)
+            btn_lay.addWidget(btn_del)
+            self.tbl_classes.setCellWidget(r, 7, btn_pnl)
+
+            # Roster button
+            btn_roster = QPushButton("لیست دانش‌آموزان")
             btn_roster.clicked.connect(lambda _, id=c_id: self.open_roster(id))
+            self.tbl_classes.setCellWidget(r, 8, btn_roster)
 
-            btn_lay.addWidget(btn_edit_cls)
-            btn_lay.addWidget(btn_roster)
+    def toggle_class_status(self, class_id: int):
+        self.class_repo.toggle_class_status(class_id)
+        self.load_classes()
 
-            self.tbl_classes.setCellWidget(r, 7, btn_panel)
+    def delete_class_dialog(self, class_id: int):
+        cls = self.class_repo.get_by_id(class_id)
+        if not cls:
+            return
+        if QMessageBox.question(self, "تأیید حذف کلاس", f"آیا از حذف کامل کلاس '{cls['name']}' اطمینان دارید؟") == QMessageBox.Yes:
+            self.class_repo.delete_class(class_id)
+            self.load_classes()
 
     def add_term(self):
         dlg = QDialog(self)
@@ -1169,11 +1190,12 @@ class TermClassManagementWidget(QWidget):
     def add_class(self):
         terms = self.term_repo.list_terms()
         if not terms:
-            QMessageBox.warning(self, "خطا", "ابتدا یک ترم ایجاد کنید.")
-            return
+            term_id = self.term_repo.create_term("ترم جاری 1403", status="open")
+        else:
+            term_id = terms[0]["id"]
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("افزودن کلاس جدید با انتخاب چند کتاب از انبار")
+        dlg.setWindowTitle("تشکیل کلاس جدید با انتخاب کتاب‌های مربوطه از انبار")
         dlg.setWindowState(dlg.windowState() | Qt.WindowMaximized)
         layout = QVBoxLayout(dlg)
 
@@ -1181,9 +1203,6 @@ class TermClassManagementWidget(QWidget):
         txt_code = QLineEdit()
         txt_name = QLineEdit()
         txt_teacher = QLineEdit()
-        cmb_term = QComboBox()
-        for t in terms:
-            cmb_term.addItem(t["name"], t["id"])
 
         spn_tuition = QDoubleSpinBox()
         spn_tuition.setRange(0, 100000000)
@@ -1195,7 +1214,6 @@ class TermClassManagementWidget(QWidget):
         form.addRow("کد کلاس:", txt_code)
         form.addRow("نام کلاس:", txt_name)
         form.addRow("استاد:", txt_teacher)
-        form.addRow("ترم مربوطه:", cmb_term)
         form.addRow("مبلغ شهریه ثابت (تومان):", spn_tuition)
         form.addRow("ظرفیت:", txt_cap)
         layout.addLayout(form)
@@ -1281,7 +1299,7 @@ class TermClassManagementWidget(QWidget):
 
                 self.class_repo.create_class(
                     code=code, name=name, teacher_name=txt_teacher.text().strip(),
-                    term_id=cmb_term.currentData(), capacity=cap,
+                    term_id=term_id, capacity=cap,
                     tuition_fee=spn_tuition.value(), book_fee=total_book_fee,
                     other_fee=spn_other.value(), other_fee_title=txt_other_title.text().strip(),
                     book_ids=list(selected_class_book_ids)
