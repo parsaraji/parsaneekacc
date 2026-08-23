@@ -380,6 +380,36 @@ class StudentProfileDialog(QDialog):
             btn_lay.addWidget(btn_del)
             self.tbl_pending.setCellWidget(r, 4, btn_pnl)
 
+        # Populate Paid Payments Table with Print Invoice Button
+        self.tbl_paid.setRowCount(len(paid_list))
+        method_map = {"cash": "نقد", "pos": "کارت‌خوان", "card_to_card": "کارت به کارت"}
+        for r, p in enumerate(paid_list):
+            date_str = f"{gregorian_to_shamsi(p['paid_date'])} {p.get('paid_time', '')}".strip()
+            self.tbl_paid.setItem(r, 0, QTableWidgetItem(date_str))
+
+            exact_desc = p.get("description") or p.get("payment_type_name", "پرداختی وصول‌شده")
+            self.tbl_paid.setItem(r, 1, QTableWidgetItem(exact_desc))
+
+            m_text = method_map.get(p["method"], p["method"])
+            if p.get("pos_device_label"):
+                m_text += f" ({p['pos_device_label']})"
+            elif p.get("card_destination_number"):
+                m_text += f" ({p.get('card_destination_owner', '')} - {p['card_destination_number']})"
+            self.tbl_paid.setItem(r, 2, QTableWidgetItem(m_text))
+
+            amt_item = QTableWidgetItem(format_currency(p["amount"]))
+            amt_item.setForeground(Qt.darkGreen)
+            self.tbl_paid.setItem(r, 3, amt_item)
+
+            track_code = p.get("bank_reference_number") or p.get("invoice_code") or p.get("unique_code") or "-"
+            self.tbl_paid.setItem(r, 4, QTableWidgetItem(track_code))
+
+            btn_print_inv = QPushButton("مشاهده / چاپ فاکتور")
+            btn_print_inv.setProperty("accent", "true")
+            pid = p["id"]
+            btn_print_inv.clicked.connect(lambda _, id=pid: self.print_student_invoice(id))
+            self.tbl_paid.setCellWidget(r, 5, btn_print_inv)
+
     def apply_debt_discount_dialog(self, debt_id: int, current_amount: float):
         dlg = QDialog(self)
         dlg.setWindowTitle("ثبت و اعمال تخفیف روی بدهی دانش‌آموز")
@@ -421,36 +451,6 @@ class StudentProfileDialog(QDialog):
 
         btn_save.clicked.connect(save)
         dlg.exec()
-
-        # Populate Paid Payments Table with Print Invoice Button
-        self.tbl_paid.setRowCount(len(paid_list))
-        method_map = {"cash": "نقد", "pos": "کارت‌خوان", "card_to_card": "کارت به کارت"}
-        for r, p in enumerate(paid_list):
-            date_str = f"{gregorian_to_shamsi(p['paid_date'])} {p.get('paid_time', '')}".strip()
-            self.tbl_paid.setItem(r, 0, QTableWidgetItem(date_str))
-
-            exact_desc = p.get("description") or p.get("payment_type_name", "پرداختی وصول‌شده")
-            self.tbl_paid.setItem(r, 1, QTableWidgetItem(exact_desc))
-
-            m_text = method_map.get(p["method"], p["method"])
-            if p.get("pos_device_label"):
-                m_text += f" ({p['pos_device_label']})"
-            elif p.get("card_destination_number"):
-                m_text += f" ({p.get('card_destination_owner', '')} - {p['card_destination_number']})"
-            self.tbl_paid.setItem(r, 2, QTableWidgetItem(m_text))
-
-            amt_item = QTableWidgetItem(format_currency(p["amount"]))
-            amt_item.setForeground(Qt.darkGreen)
-            self.tbl_paid.setItem(r, 3, amt_item)
-
-            track_code = p.get("bank_reference_number") or p.get("invoice_code") or p.get("unique_code") or "-"
-            self.tbl_paid.setItem(r, 4, QTableWidgetItem(track_code))
-
-            btn_print_inv = QPushButton("مشاهده / چاپ فاکتور")
-            btn_print_inv.setProperty("accent", "true")
-            pid = p["id"]
-            btn_print_inv.clicked.connect(lambda _, id=pid: self.print_student_invoice(id))
-            self.tbl_paid.setCellWidget(r, 5, btn_print_inv)
 
     def print_student_invoice(self, payment_id: int):
         p_data = self.payment_repo.get_payment_by_id(payment_id)
