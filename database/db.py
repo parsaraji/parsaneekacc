@@ -86,7 +86,7 @@ def init_db(db_path: Optional[str] = None) -> None:
         class_id INTEGER NOT NULL,
         student_id INTEGER NOT NULL,
         enrolled_at TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'transferred_out')),
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'graduated', 'dropped_out', 'transferred_out')),
         FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
         FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
     );
@@ -241,6 +241,28 @@ def init_db(db_path: Optional[str] = None) -> None:
     CREATE INDEX IF NOT EXISTS idx_invoices_payment ON invoices(payment_id);
     CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
     """)
+
+    # Migration for existing DBs: update class_enrollments CHECK constraint if needed
+    cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='class_enrollments'")
+    row = cursor.fetchone()
+    if row and row[0] and "graduated" not in row[0]:
+        cursor.executescript("""
+            CREATE TABLE class_enrollments_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                class_id INTEGER NOT NULL,
+                student_id INTEGER NOT NULL,
+                enrolled_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'graduated', 'dropped_out', 'transferred_out')),
+                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+            );
+            INSERT INTO class_enrollments_new (id, class_id, student_id, enrolled_at, status)
+            SELECT id, class_id, student_id, enrolled_at, status FROM class_enrollments;
+            DROP TABLE class_enrollments;
+            ALTER TABLE class_enrollments_new RENAME TO class_enrollments;
+            CREATE INDEX IF NOT EXISTS idx_enrollments_class ON class_enrollments(class_id);
+            CREATE INDEX IF NOT EXISTS idx_enrollments_student ON class_enrollments(student_id);
+        """)
 
     # Populate or sync default payment types
     default_types = ["شهریه", "کتاب", "هزینه‌های جانبی", "ثبت‌نام اولیه", "کلاس خصوصی"]

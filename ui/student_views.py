@@ -751,10 +751,13 @@ class StudentProfileDialog(QDialog):
 
         def save():
             new_st = cmb_st.currentData()
-            self.class_repo.update_enrollment_status(enrollment_id, new_st)
-            QMessageBox.information(dlg, "موفقیت", "وضعیت ثبت‌نام با موفقیت بروزرسانی شد.")
-            dlg.accept()
-            self.load_classes_history()
+            try:
+                self.class_repo.update_enrollment_status(enrollment_id, new_st)
+                QMessageBox.information(dlg, "موفقیت", "وضعیت ثبت‌نام با موفقیت بروزرسانی شد.")
+                dlg.accept()
+                self.load_classes_history()
+            except Exception as e:
+                QMessageBox.critical(dlg, "خطا در ثبت وضعیت", f"خطا در بروزرسانی وضعیت:\n{e}")
 
         btn_save.clicked.connect(save)
         dlg.exec()
@@ -1701,8 +1704,6 @@ class TermClassManagementWidget(QWidget):
 
                 curr_status = s.get("enrollment_status", "active")
                 idx = cmb_st.findData(curr_status)
-                if idx >= 0:
-                    cmb_st.setCurrentIndex(idx)
 
                 eid = s.get("enrollment_id")
 
@@ -1710,8 +1711,14 @@ class TermClassManagementWidget(QWidget):
                     def on_status_changed(index):
                         new_st = combo_widget.itemData(index)
                         if enroll_id and new_st:
-                            self.class_repo.update_enrollment_status(enroll_id, new_st)
+                            try:
+                                self.class_repo.update_enrollment_status(enroll_id, new_st)
+                            except Exception as e:
+                                QMessageBox.critical(dlg, "خطا در بروزرسانی وضعیت", f"امکان ذخیره وضعیت وجود ندارد:\n{e}")
                     return on_status_changed
+
+                if idx >= 0:
+                    cmb_st.setCurrentIndex(idx)
 
                 cmb_st.currentIndexChanged.connect(make_status_handler(eid, cmb_st))
                 tbl.setCellWidget(row, 3, cmb_st)

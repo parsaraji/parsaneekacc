@@ -39,7 +39,13 @@ def test_full_system_flow():
     class_repo = ClassRepository(TEST_DB)
     cid = class_repo.create_class("MATH-101", "ریاضیات کنکور", "استاد احمدی", tid, capacity=2)
     class_repo.add_enrollment(cid, sid)
-    assert len(class_repo.get_class_roster(cid)) == 1
+    roster = class_repo.get_class_roster(cid)
+    assert len(roster) == 1
+
+    # Test update_enrollment_status with all status options
+    enroll_id = roster[0]["enrollment_id"]
+    for new_st in ["graduated", "dropped_out", "transferred_out", "active"]:
+        class_repo.update_enrollment_status(enroll_id, new_st)
 
     # 2. Payment & Invoice
     pay_repo = PaymentRepository(TEST_DB)
