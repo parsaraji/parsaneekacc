@@ -296,9 +296,11 @@ class StudentProfileDialog(QDialog):
         tab_classes_hist = QWidget()
         ch_layout = QVBoxLayout(tab_classes_hist)
         self.tbl_classes_hist = QTableWidget()
-        self.tbl_classes_hist.setColumnCount(4)
-        self.tbl_classes_hist.setHorizontalHeaderLabels(["کد کلاس", "نام کلاس", "استاد", "تاریخ ثبت‌نام"])
-        self.tbl_classes_hist.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_classes_hist.setColumnCount(6)
+        self.tbl_classes_hist.setHorizontalHeaderLabels(["کد کلاس", "نام کلاس", "استاد", "تاریخ ثبت‌نام", "وضعیت ثبت‌نام", "عملیات"])
+        for col in range(5):
+            self.tbl_classes_hist.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
+        self.tbl_classes_hist.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
         ch_layout.addWidget(self.tbl_classes_hist)
         self.load_classes_history()
         tabs.addTab(tab_classes_hist, "سابقه کلاس‌ها")
@@ -682,7 +684,7 @@ class StudentProfileDialog(QDialog):
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
-            """SELECT c.code, c.name, c.teacher_name, ce.enrolled_at
+            """SELECT ce.id as enrollment_id, ce.status as enrollment_status, c.code, c.name, c.teacher_name, ce.enrolled_at
                FROM class_enrollments ce
                JOIN classes c ON ce.class_id = c.id
                WHERE ce.student_id = ?
@@ -692,12 +694,69 @@ class StudentProfileDialog(QDialog):
         rows = cursor.fetchall()
         conn.close()
 
+        status_map = {
+            "active": "درحال یادگیری / فعال",
+            "graduated": "فارغ‌التحصیل",
+            "dropped_out": "حذف‌شده / انصرافی",
+            "transferred_out": "منتقل‌شده"
+        }
+
         self.tbl_classes_hist.setRowCount(len(rows))
         for row, r in enumerate(rows):
             self.tbl_classes_hist.setItem(row, 0, QTableWidgetItem(r["code"]))
             self.tbl_classes_hist.setItem(row, 1, QTableWidgetItem(r["name"]))
             self.tbl_classes_hist.setItem(row, 2, QTableWidgetItem(r["teacher_name"] or "-"))
             self.tbl_classes_hist.setItem(row, 3, QTableWidgetItem(gregorian_to_shamsi(r["enrolled_at"])))
+
+            st_val = r["enrollment_status"]
+            st_item = QTableWidgetItem(status_map.get(st_val, st_val))
+            if st_val == "active":
+                st_item.setForeground(Qt.blue)
+            elif st_val == "graduated":
+                st_item.setForeground(Qt.darkGreen)
+            else:
+                st_item.setForeground(Qt.red)
+            self.tbl_classes_hist.setItem(row, 4, st_item)
+
+            btn_edit_st = QPushButton("تغییر وضعیت")
+            btn_edit_st.setProperty("accent", "true")
+            eid = r["enrollment_id"]
+            curr_st = st_val
+            c_name = r["name"]
+            btn_edit_st.clicked.connect(lambda _, id=eid, s=curr_st, cn=c_name: self.edit_enrollment_status_dialog(id, s, cn))
+            self.tbl_classes_hist.setCellWidget(row, 5, btn_edit_st)
+
+    def edit_enrollment_status_dialog(self, enrollment_id: int, current_status: str, class_name: str):
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"تغییر وضعیت ثبت‌نام در کلاس '{class_name}'")
+        dlg.resize(400, 180)
+        form = QFormLayout(dlg)
+
+        cmb_st = QComboBox()
+        cmb_st.addItem("فعال / درحال یادگیری", "active")
+        cmb_st.addItem("فارغ‌التحصیل", "graduated")
+        cmb_st.addItem("حذف‌شده / انصرافی", "dropped_out")
+        cmb_st.addItem("منتقل‌شده به کلاس دیگر", "transferred_out")
+
+        idx = cmb_st.findData(current_status)
+        if idx >= 0:
+            cmb_st.setCurrentIndex(idx)
+
+        form.addRow("وضعیت جدید این کلاس:", cmb_st)
+
+        btn_save = QPushButton("ذخیره وضعیت جدید")
+        btn_save.setProperty("accent", "true")
+        form.addRow(btn_save)
+
+        def save():
+            new_st = cmb_st.currentData()
+            self.class_repo.update_enrollment_status(enrollment_id, new_st)
+            QMessageBox.information(dlg, "موفقیت", "وضعیت ثبت‌نام با موفقیت بروزرسانی شد.")
+            dlg.accept()
+            self.load_classes_history()
+
+        btn_save.clicked.connect(save)
+        dlg.exec()
 
     def load_attachments(self):
         atts = self.attachment_repo.list_attachments(self.student_id)
@@ -1732,8 +1791,12 @@ class TermClassManagementWidget(QWidget):
                         if QMessageBox.question(opt_dlg, "هشدار اتمام موجودی انبار", f"موجودی آیتم‌های زیر در انبار صفر یا منفی است:\n{titles}\n\nآیا مایلید دانش‌آموز ثبت‌نام شده و موجودی انبار منفی گردد؟") != QMessageBox.Yes:
                             return
 
-                    # Perform Enrollment passing selected_book_ids
-                    self.class_repo.add_enrollment(class_id, st["id"], selected_book_ids=list(selected_book_ids))
+                    # Perform Enrollment passing selected_book_ids and handle active class constraint
+                    try:
+                        self.class_repo.add_enrollment(class_id, st["id"], selected_book_ids=list(selected_book_ids))
+                    except ValueError as err:
+                        QMessageBox.warning(opt_dlg, "خطای ثبت‌نام همزمان در دو کلاس", str(err))
+                        return
 
                     QMessageBox.information(opt_dlg, "موفقیت", "دانش‌آموز با موفقیت در کلاس ثبت‌نام گردید و کالا/کتاب‌های انتخابی کسر شد.")
                     opt_dlg.accept()

@@ -452,6 +452,19 @@ class ClassRepository:
         cursor = conn.cursor()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        # Check if student is currently enrolled in ANY active class
+        cursor.execute(
+            """SELECT c.name, c.code FROM class_enrollments ce
+               JOIN classes c ON ce.class_id = c.id
+               WHERE ce.student_id = ? AND ce.status = 'active'""",
+            (student_id,)
+        )
+        active_enrollment = cursor.fetchone()
+        if active_enrollment:
+            conn.close()
+            cls_info = f"{active_enrollment['name']} ({active_enrollment['code']})"
+            raise ValueError(f"این دانش‌آموز درحال حاضر در کلاس فعال '{cls_info}' ثبت‌نام می‌باشد. برای ثبت‌نام در کلاس جدید، ابتدا وضعیت کلاس قبلی را فارغ‌التحصیل یا انصرافی قرار دهید.")
+
         cursor.execute(
             "SELECT id FROM class_enrollments WHERE class_id = ? AND student_id = ? AND status = 'active'",
             (class_id, student_id)
@@ -551,6 +564,14 @@ class ClassRepository:
                  f"{cls['other_fee_title'] or 'هزینه جانبی'} - کلاس {cls['name']}", now[:10], now[11:])
             )
 
+        conn.commit()
+        conn.close()
+
+    def update_enrollment_status(self, enrollment_id: int, new_status: str) -> None:
+        """Updates enrollment status ('active', 'graduated', 'dropped_out', 'transferred_out')."""
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("UPDATE class_enrollments SET status = ? WHERE id = ?", (new_status, enrollment_id))
         conn.commit()
         conn.close()
         return enrollment_id
