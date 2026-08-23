@@ -596,12 +596,12 @@ class ClassRepository:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
         cursor.execute(
-            """SELECT s.*, ce.enrolled_at, ce.status as enrollment_status,
+            """SELECT s.*, ce.id as enrollment_id, ce.enrolled_at, ce.status as enrollment_status,
                       (SELECT phone_number FROM student_phones WHERE student_id = s.id AND is_primary = 1 LIMIT 1) as primary_phone
                FROM class_enrollments ce
                JOIN students s ON ce.student_id = s.id
-               WHERE ce.class_id = ? AND ce.status = 'active'
-               ORDER BY s.last_name, s.first_name""",
+               WHERE ce.class_id = ?
+               ORDER BY CASE WHEN ce.status = 'active' THEN 0 ELSE 1 END, s.last_name, s.first_name""",
             (class_id,)
         )
         rows = cursor.fetchall()

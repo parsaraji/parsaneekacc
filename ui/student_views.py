@@ -161,6 +161,7 @@ class StudentProfileDialog(QDialog):
         self.student_id = student_id
         self.db_path = db_path
         self.student_repo = StudentRepository(db_path)
+        self.class_repo = ClassRepository(db_path)
         self.term_repo = TermRepository(db_path)
         self.financial_engine = FinancialEngine(db_path)
         self.payment_repo = PaymentRepository(db_path)
@@ -1663,7 +1664,7 @@ class TermClassManagementWidget(QWidget):
 
         dlg = QDialog(self)
         dlg.setWindowTitle(f"لیست کلاس: {cls['name']} ({cls['code']})")
-        dlg.resize(650, 450)
+        dlg.resize(750, 450)
         vbox = QVBoxLayout(dlg)
 
         top_h = QHBoxLayout()
@@ -1675,9 +1676,12 @@ class TermClassManagementWidget(QWidget):
         vbox.addLayout(top_h)
 
         tbl = QTableWidget()
-        tbl.setColumnCount(4)
-        tbl.setHorizontalHeaderLabels(["کد دانش‌آموزی", "نام و نام خانوادگی", "شماره تماس", "عملیات"])
-        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tbl.setColumnCount(5)
+        tbl.setHorizontalHeaderLabels(["کد دانش‌آموزی", "نام و نام خانوادگی", "شماره تماس", "وضعیت ثبت‌نام", "عملیات"])
+        for col in range(3):
+            tbl.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
+        tbl.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        tbl.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         vbox.addWidget(tbl)
 
         def refresh_roster():
@@ -1687,6 +1691,30 @@ class TermClassManagementWidget(QWidget):
                 tbl.setItem(row, 0, QTableWidgetItem(s["unique_code"]))
                 tbl.setItem(row, 1, QTableWidgetItem(f"{s['first_name']} {s['last_name']}"))
                 tbl.setItem(row, 2, QTableWidgetItem(to_persian_digits(s.get("primary_phone") or "-")))
+
+                # Enrollment status combo box
+                cmb_st = QComboBox()
+                cmb_st.addItem("فعال / درحال یادگیری", "active")
+                cmb_st.addItem("فارغ‌التحصیل", "graduated")
+                cmb_st.addItem("حذف‌شده / انصرافی", "dropped_out")
+                cmb_st.addItem("منتقل‌شده", "transferred_out")
+
+                curr_status = s.get("enrollment_status", "active")
+                idx = cmb_st.findData(curr_status)
+                if idx >= 0:
+                    cmb_st.setCurrentIndex(idx)
+
+                eid = s.get("enrollment_id")
+
+                def make_status_handler(enroll_id, combo_widget):
+                    def on_status_changed(index):
+                        new_st = combo_widget.itemData(index)
+                        if enroll_id and new_st:
+                            self.class_repo.update_enrollment_status(enroll_id, new_st)
+                    return on_status_changed
+
+                cmb_st.currentIndexChanged.connect(make_status_handler(eid, cmb_st))
+                tbl.setCellWidget(row, 3, cmb_st)
 
                 btn_pnl = QWidget()
                 btn_lay = QHBoxLayout(btn_pnl)
@@ -1698,7 +1726,7 @@ class TermClassManagementWidget(QWidget):
                 btn_rem.clicked.connect(lambda _, id=s_id: remove_st(id))
 
                 btn_lay.addWidget(btn_rem)
-                tbl.setCellWidget(row, 3, btn_pnl)
+                tbl.setCellWidget(row, 4, btn_pnl)
 
         def enroll_st():
             picker = StudentPickerDialog(db_path=self.db_path, parent=dlg)
