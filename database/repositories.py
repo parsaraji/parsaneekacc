@@ -504,16 +504,10 @@ class ClassRepository:
             )
             books_to_process = [dict(r) for r in cursor.fetchall()]
 
-        # Directly reduce stock using current connection cursor (avoids database is locked error)
-        for bk in books_to_process:
-            cursor.execute("UPDATE books SET stock_quantity = stock_quantity - 1 WHERE id = ?", (bk["id"],))
-
         def get_type_id(pt_name):
             cursor.execute("SELECT id FROM payment_types WHERE name = ?", (pt_name,))
             r = cursor.fetchone()
             return r["id"] if r else 1
-
-        p_code_num = 1
 
         # Insert tuition debt
         if cls["tuition_fee"] > 0:
@@ -531,8 +525,14 @@ class ClassRepository:
                  f"شهریه کلاس {cls['name']} ({cls['code']})", now[:10], now[11:])
             )
 
-        # Insert book debts for each processed book
+        # Consume stock FIFO and insert book debts for each processed book
         for bk in books_to_process:
+            consumed = _consume_stock_fifo_cursor(cursor, bk["id"], 1)
+            total_cost = sum(item["quantity_taken"] * item["purchase_price"] for item in consumed)
+            total_qty = sum(item["quantity_taken"] for item in consumed)
+            unit_cost = (total_cost / total_qty) if total_qty > 0 else bk["purchase_price"]
+            batch_id = consumed[0]["batch_id"] if (len(consumed) == 1 and consumed[0]["batch_id"] is not None) else None
+
             if bk["sale_price"] > 0:
                 cursor.execute("SELECT MAX(id) FROM payments")
                 max_id = cursor.fetchone()[0] or 0
@@ -542,10 +542,11 @@ class ClassRepository:
                         unique_code, student_id, term_id, payment_type_id, amount,
                         discount_percent, discount_amount, late_fee_amount, method,
                         description, due_date, paid_date, paid_time, is_installment,
-                        installment_no, installment_total, status
-                    ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 'cash', ?, '', ?, ?, 0, 1, 1, 'pending')""",
+                        installment_no, installment_total, status, book_id, book_batch_id, book_unit_cost
+                    ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, 'cash', ?, '', ?, ?, 0, 1, 1, 'pending', ?, ?, ?)""",
                     (p_code, student_id, term_id, get_type_id("کتاب"), bk["sale_price"],
-                     f"کتاب کلاس {cls['name']}: {bk['title']}", now[:10], now[11:])
+                     f"کتاب کلاس {cls['name']}: {bk['title']}", now[:10], now[11:],
+                     bk["id"], batch_id, unit_cost)
                 )
 
         # Insert other fee debt
@@ -630,7 +631,8 @@ class PaymentRepository:
                        bank_reference_number: str = "", card_tracking_code: str = "",
                        description: str = "", due_date: str = "", paid_date: str = "", paid_time: str = "",
                        is_installment: bool = False, installment_no: int = 1, installment_total: int = 1,
-                       status: str = "paid", recorded_by_user_id: Optional[int] = None, create_invoice: bool = True) -> int:
+                       status: str = "paid", recorded_by_user_id: Optional[int] = None, create_invoice: bool = True,
+                       book_id: Optional[int] = None, book_batch_id: Optional[int] = None, book_unit_cost: Optional[float] = None) -> int:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
 
@@ -644,14 +646,16 @@ class PaymentRepository:
                 discount_percent, discount_amount, late_fee_amount, method,
                 pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
                 description, due_date, paid_date, paid_time, is_installment,
-                installment_no, installment_total, status, recorded_by_user_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                installment_no, installment_total, status, recorded_by_user_id,
+                book_id, book_batch_id, book_unit_cost
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 p_code, student_id, term_id, payment_type_id, amount,
                 discount_percent, discount_amount, late_fee_amount, method,
                 pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
                 description, due_date, now_date, now_time, 1 if is_installment else 0,
-                installment_no, installment_total, status, recorded_by_user_id
+                installment_no, installment_total, status, recorded_by_user_id,
+                book_id, book_batch_id, book_unit_cost
             )
         )
         payment_id = cursor.lastrowid
@@ -717,9 +721,8 @@ class PaymentRepository:
                                        recorded_by_user_id: Optional[int] = None) -> int:
         """
         Executes multi-debt settlements and new line-item charges inside a SINGLE atomic transaction.
-        When a pending debt is fully settled, the pending debt record is removed or reduced, and
-        ONE consolidated paid payment record is issued with ONE invoice. This guarantees zero double-counting
-        and zero database locks.
+        Preserves original payment_type_id, book_id, book_batch_id, and book_unit_cost on settled items
+        so financial reporting and COGS calculations remain exact.
         """
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
@@ -727,80 +730,113 @@ class PaymentRepository:
         now_date = datetime.now().strftime("%Y-%m-%d")
         now_time = datetime.now().strftime("%H:%M:%S")
 
-        total_settled_amount = 0.0
-        settlement_descriptions = []
+        processed_payment_ids = []
 
         # 1. Process Debt Settlements
         for debt_item in debt_settlements:
             debt_id = debt_item["debt_id"]
             pay_amt = debt_item["pay_amount"]
             debt_total = debt_item["total_debt_amount"]
-            d_desc = debt_item.get("description", "بدهی")
 
             if pay_amt <= 0:
                 continue
 
+            cursor.execute("SELECT * FROM payments WHERE id = ?", (debt_id,))
+            orig_p = cursor.fetchone()
+            if not orig_p:
+                continue
+
+            orig_p = dict(orig_p)
+
             if pay_amt >= debt_total:
-                # Full settlement: delete pending debt row to avoid double-counting
-                cursor.execute("DELETE FROM payments WHERE id = ?", (debt_id,))
-                settlement_descriptions.append(f"تسویه کامل ({d_desc})")
-                total_settled_amount += pay_amt
+                # Full settlement: update pending debt record directly to 'paid' state, preserving type & book metadata
+                cursor.execute(
+                    """UPDATE payments SET
+                        amount = ?, status = 'paid', paid_date = ?, paid_time = ?, method = ?,
+                        pos_device_id = ?, card_destination_id = ?, bank_reference_number = ?,
+                        card_tracking_code = ?, recorded_by_user_id = ?
+                       WHERE id = ?""",
+                    (pay_amt, now_date, now_time, method, pos_device_id, card_destination_id,
+                     bank_reference_number, card_tracking_code, recorded_by_user_id, debt_id)
+                )
+                settled_pid = debt_id
             else:
-                # Partial settlement: reduce remaining pending debt
+                # Partial settlement: reduce remaining pending debt amount and create a new paid record with same metadata
                 rem_debt = debt_total - pay_amt
                 cursor.execute("UPDATE payments SET amount = ? WHERE id = ?", (rem_debt, debt_id))
-                settlement_descriptions.append(f"تسویه بخشی از ({d_desc}): {pay_amt}")
-                total_settled_amount += pay_amt
+
+                p_code = self._generate_payment_code(cursor)
+                cursor.execute(
+                    """INSERT INTO payments (
+                        unique_code, student_id, term_id, payment_type_id, amount,
+                        discount_percent, discount_amount, late_fee_amount, method,
+                        pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
+                        description, due_date, paid_date, paid_time, is_installment,
+                        installment_no, installment_total, status, recorded_by_user_id,
+                        book_id, book_batch_id, book_unit_cost
+                    ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 'paid', ?, ?, ?, ?)""",
+                    (
+                        p_code, student_id, orig_p.get("term_id"), orig_p["payment_type_id"], pay_amt,
+                        method, pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
+                        f"پرداخت بخشی از {orig_p.get('description', '')}", orig_p.get("due_date", ""),
+                        now_date, now_time, recorded_by_user_id,
+                        orig_p.get("book_id"), orig_p.get("book_batch_id"), orig_p.get("book_unit_cost")
+                    )
+                )
+                settled_pid = cursor.lastrowid
+
+            # Issue invoice for this settled payment record if none exists
+            cursor.execute("SELECT id FROM invoices WHERE payment_id = ?", (settled_pid,))
+            if not cursor.fetchone():
+                inv_code = self._generate_invoice_code(cursor)
+                cursor.execute(
+                    "INSERT INTO invoices (unique_code, payment_id, student_id, issued_at, printed) VALUES (?, ?, ?, ?, 0)",
+                    (inv_code, settled_pid, student_id, f"{now_date} {now_time}")
+                )
+
+            processed_payment_ids.append(settled_pid)
 
         # 2. Process New Line Items
-        new_items_amount = 0.0
         for nitem in new_line_items:
             n_amt = nitem["amount"]
-            n_lbl = nitem.get("name_label", "آیتم جدید")
-            new_items_amount += n_amt
-            settlement_descriptions.append(f"{n_lbl}: {n_amt}")
+            if n_amt <= 0:
+                continue
 
-        total_paid_overall = total_settled_amount + new_items_amount
+            pt_id = nitem.get("payment_type_id", 1)
+            b_id = nitem.get("book_id")
+            b_batch_id = nitem.get("book_batch_id")
+            b_cost = nitem.get("book_unit_cost")
+            n_desc = f"{description} - {nitem.get('name_label', '')}".strip(" -")
 
-        if total_paid_overall <= 0:
-            conn.close()
-            return 0
-
-        # 3. Create ONE consolidated payment record for the full transaction amount
-        p_code = self._generate_payment_code(cursor)
-        combined_desc = f"{description} | " + " - ".join(settlement_descriptions) if description else " - ".join(settlement_descriptions)
-
-        cursor.execute("SELECT id FROM payment_types WHERE name = 'شهریه'")
-        r_pt = cursor.fetchone()
-        pt_id = r_pt["id"] if r_pt else 1
-
-        cursor.execute(
-            """INSERT INTO payments (
-                unique_code, student_id, term_id, payment_type_id, amount,
-                discount_percent, discount_amount, late_fee_amount, method,
-                pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
-                description, due_date, paid_date, paid_time, is_installment,
-                installment_no, installment_total, status, recorded_by_user_id
-            ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 'paid', ?)""",
-            (
-                p_code, student_id, term_id, pt_id, total_paid_overall, method,
-                pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
-                combined_desc, now_date, now_date, now_time, recorded_by_user_id
+            p_code = self._generate_payment_code(cursor)
+            cursor.execute(
+                """INSERT INTO payments (
+                    unique_code, student_id, term_id, payment_type_id, amount,
+                    discount_percent, discount_amount, late_fee_amount, method,
+                    pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
+                    description, due_date, paid_date, paid_time, is_installment,
+                    installment_no, installment_total, status, recorded_by_user_id,
+                    book_id, book_batch_id, book_unit_cost
+                ) VALUES (?, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, 1, 'paid', ?, ?, ?, ?)""",
+                (
+                    p_code, student_id, term_id, pt_id, n_amt,
+                    method, pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
+                    n_desc, now_date, now_date, now_time, recorded_by_user_id,
+                    b_id, b_batch_id, b_cost
+                )
             )
-        )
-        final_payment_id = cursor.lastrowid
+            n_pid = cursor.lastrowid
 
-        # 4. Issue ONE consolidated invoice
-        inv_code = self._generate_invoice_code(cursor)
-        issued_at = f"{now_date} {now_time}"
-        cursor.execute(
-            "INSERT INTO invoices (unique_code, payment_id, student_id, issued_at, printed) VALUES (?, ?, ?, ?, 0)",
-            (inv_code, final_payment_id, student_id, issued_at)
-        )
+            inv_code = self._generate_invoice_code(cursor)
+            cursor.execute(
+                "INSERT INTO invoices (unique_code, payment_id, student_id, issued_at, printed) VALUES (?, ?, ?, ?, 0)",
+                (inv_code, n_pid, student_id, f"{now_date} {now_time}")
+            )
+            processed_payment_ids.append(n_pid)
 
         conn.commit()
         conn.close()
-        return final_payment_id
+        return processed_payment_ids[0] if processed_payment_ids else 0
 
     def list_payments(self, student_id: Optional[int] = None, term_id: Optional[int] = None,
                       date_from: str = "", date_to: str = "", status: str = "",
@@ -1025,6 +1061,49 @@ class AttachmentRepository:
         conn.close()
 
 
+def _consume_stock_fifo_cursor(cursor: sqlite3.Cursor, book_id: int, quantity: int = 1) -> List[Dict[str, Any]]:
+    """Helper to consume stock FIFO from book_batches using an existing cursor."""
+    cursor.execute(
+        "SELECT * FROM book_batches WHERE book_id = ? AND quantity_remaining > 0 ORDER BY id ASC",
+        (book_id,)
+    )
+    batches = [dict(r) for r in cursor.fetchall()]
+
+    cursor.execute("SELECT purchase_price, sale_price FROM books WHERE id = ?", (book_id,))
+    bk_row = cursor.fetchone()
+    latest_purchase_price = bk_row["purchase_price"] if bk_row else 0.0
+    latest_sale_price = bk_row["sale_price"] if bk_row else 0.0
+
+    consumed = []
+    needed = quantity
+
+    for b in batches:
+        if needed <= 0:
+            break
+        rem = b["quantity_remaining"]
+        take = min(needed, rem)
+        new_rem = rem - take
+        cursor.execute("UPDATE book_batches SET quantity_remaining = ? WHERE id = ?", (new_rem, b["id"]))
+        consumed.append({
+            "batch_id": b["id"],
+            "quantity_taken": take,
+            "purchase_price": b["purchase_price"],
+            "sale_price": b["sale_price"]
+        })
+        needed -= take
+
+    if needed > 0:
+        consumed.append({
+            "batch_id": None,
+            "quantity_taken": needed,
+            "purchase_price": latest_purchase_price,
+            "sale_price": latest_sale_price
+        })
+
+    cursor.execute("UPDATE books SET stock_quantity = stock_quantity - ? WHERE id = ?", (quantity, book_id))
+    return consumed
+
+
 class BookRepository:
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path
@@ -1032,14 +1111,53 @@ class BookRepository:
     def add_book(self, title: str, purchase_price: float, sale_price: float, stock_quantity: int = 0) -> int:
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now_date = datetime.now().strftime("%Y-%m-%d")
         cursor.execute(
             "INSERT INTO books (title, purchase_price, sale_price, stock_quantity) VALUES (?, ?, ?, ?)",
             (title, purchase_price, sale_price, stock_quantity)
         )
         bid = cursor.lastrowid
+        if stock_quantity > 0:
+            cursor.execute(
+                """INSERT INTO book_batches (book_id, purchase_date, quantity_purchased, quantity_remaining, purchase_price, sale_price, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (bid, now_date, stock_quantity, stock_quantity, purchase_price, sale_price, now_str)
+            )
         conn.commit()
         conn.close()
         return bid
+
+    def restock_book(self, book_id: int, quantity: int, purchase_price: float, sale_price: float, purchase_date: Optional[str] = None) -> int:
+        """Restocks a book by adding a new lot/batch in book_batches and updating stock and current prices."""
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        p_date = purchase_date or datetime.now().strftime("%Y-%m-%d")
+
+        cursor.execute(
+            """INSERT INTO book_batches (book_id, purchase_date, quantity_purchased, quantity_remaining, purchase_price, sale_price, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (book_id, p_date, quantity, quantity, purchase_price, sale_price, now_str)
+        )
+        batch_id = cursor.lastrowid
+
+        cursor.execute(
+            "UPDATE books SET stock_quantity = stock_quantity + ?, purchase_price = ?, sale_price = ? WHERE id = ?",
+            (quantity, purchase_price, sale_price, book_id)
+        )
+
+        conn.commit()
+        conn.close()
+        return batch_id
+
+    def list_batches(self, book_id: int) -> List[Dict[str, Any]]:
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM book_batches WHERE book_id = ? ORDER BY id DESC", (book_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(r) for r in rows]
 
     def list_books(self) -> List[Dict[str, Any]]:
         conn = get_connection(self.db_path)
@@ -1065,18 +1183,22 @@ class BookRepository:
         conn.close()
         return row[0] if row else 0
 
-    def reduce_stock(self, book_id: int, count: int = 1) -> int:
-        """Reduces book stock by count. Stock can become negative if confirmed."""
+    def consume_stock_fifo(self, book_id: int, count: int = 1) -> List[Dict[str, Any]]:
+        """Deducts stock using FIFO from book_batches and returns list of consumed batch dicts."""
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("UPDATE books SET stock_quantity = stock_quantity - ? WHERE id = ?", (count, book_id))
-        cursor.execute("SELECT stock_quantity FROM books WHERE id = ?", (book_id,))
-        new_stock = cursor.fetchone()[0]
+        consumed = _consume_stock_fifo_cursor(cursor, book_id, count)
         conn.commit()
         conn.close()
-        return new_stock
+        return consumed
+
+    def reduce_stock(self, book_id: int, count: int = 1) -> int:
+        """Reduces book stock using FIFO. Returns remaining overall stock_quantity."""
+        self.consume_stock_fifo(book_id, count)
+        return self.get_stock(book_id)
 
     def update_book(self, book_id: int, title: str, purchase_price: float, sale_price: float, stock_quantity: int) -> None:
+        """Important: This method should NOT be used for adding new stock. Use restock_book() instead for batch inventory tracking."""
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
         cursor.execute(

@@ -577,7 +577,12 @@ class StudentProfileDialog(QDialog):
                     break
 
             for bk in chosen_items:
-                b_repo.reduce_stock(bk["id"], 1)
+                consumed = b_repo.consume_stock_fifo(bk["id"], 1)
+                total_cost = sum(item["quantity_taken"] * item["purchase_price"] for item in consumed)
+                total_qty = sum(item["quantity_taken"] for item in consumed)
+                unit_cost = (total_cost / total_qty) if total_qty > 0 else bk["purchase_price"]
+                batch_id = consumed[0]["batch_id"] if (len(consumed) == 1 and consumed[0]["batch_id"] is not None) else None
+
                 self.payment_repo.record_payment(
                     student_id=self.student_id,
                     payment_type_id=book_pt_id,
@@ -585,7 +590,10 @@ class StudentProfileDialog(QDialog):
                     method="cash",
                     description=f"کالا / کتاب انبار: {bk['title']}",
                     status="pending",
-                    create_invoice=False
+                    create_invoice=False,
+                    book_id=bk["id"],
+                    book_batch_id=batch_id,
+                    book_unit_cost=unit_cost
                 )
 
             QMessageBox.information(dlg, "موفقیت", "بدهی کالاهای انتخابی با موفقیت ثبت گردید و موجودی انبار کسر شد.")
@@ -1170,22 +1178,29 @@ class TermClassManagementWidget(QWidget):
         b_layout = QVBoxLayout(self.tab_books)
 
         b_top = QHBoxLayout()
-        btn_add_book = QPushButton("افزودن کتاب/کالا جدید به انبار +")
+        btn_add_book = QPushButton("تعریف کتاب جدید +")
         btn_add_book.setProperty("accent", "true")
         btn_add_book.clicked.connect(self.add_book_dialog)
+
+        btn_restock_book = QPushButton("افزودن موجودی جدید (خرید تازه) +")
+        btn_restock_book.setProperty("accent", "true")
+        btn_restock_book.clicked.connect(lambda: self.restock_book_dialog())
 
         btn_ref_books = QPushButton("بروزرسانی انبار")
         btn_ref_books.clicked.connect(self.load_books)
 
         b_top.addWidget(btn_add_book)
+        b_top.addWidget(btn_restock_book)
         b_top.addWidget(btn_ref_books)
         b_top.addStretch()
         b_layout.addLayout(b_top)
 
         self.tbl_books = QTableWidget()
         self.tbl_books.setColumnCount(5)
-        self.tbl_books.setHorizontalHeaderLabels(["عنوان کتاب / کالا", "قیمت خرید (تومان)", "قیمت فروش (تومان)", "موجودی انبار", "عملیات"])
-        self.tbl_books.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_books.setHorizontalHeaderLabels(["عنوان کتاب / کالا", "آخرین قیمت خرید", "قیمت فروش جاری", "موجودی انبار", "عملیات"])
+        for col in range(4):
+            self.tbl_books.horizontalHeader().setSectionResizeMode(col, QHeaderView.Stretch)
+        self.tbl_books.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         b_layout.addWidget(self.tbl_books)
         tabs.addTab(self.tab_books, "انبار کتاب‌ها و کالاها")
 
@@ -1204,10 +1219,135 @@ class TermClassManagementWidget(QWidget):
             self.tbl_books.setItem(r, 2, QTableWidgetItem(format_currency(b["sale_price"])))
             self.tbl_books.setItem(r, 3, QTableWidgetItem(to_persian_digits(b["stock_quantity"])))
 
-            btn_edit = QPushButton("ویرایش")
             bid = b["id"]
+            btn_pnl = QWidget()
+            btn_lay = QHBoxLayout(btn_pnl)
+            btn_lay.setContentsMargins(0, 0, 0, 0)
+
+            btn_edit = QPushButton("ویرایش")
+            btn_restock = QPushButton("+ خرید جدید")
+            btn_batches = QPushButton("تاریخچه خریدها")
+
             btn_edit.clicked.connect(lambda _, id=bid: self.edit_book_dialog(id))
-            self.tbl_books.setCellWidget(r, 4, btn_edit)
+            btn_restock.clicked.connect(lambda _, id=bid: self.restock_book_dialog(book_id=id))
+            btn_batches.clicked.connect(lambda _, id=bid: self.view_batches_dialog(id))
+
+            btn_lay.addWidget(btn_edit)
+            btn_lay.addWidget(btn_restock)
+            btn_lay.addWidget(btn_batches)
+            self.tbl_books.setCellWidget(r, 4, btn_pnl)
+
+    def restock_book_dialog(self, book_id: Optional[int] = None):
+        b_repo = BookRepository(self.db_path)
+        all_books = b_repo.list_books()
+        if not all_books:
+            QMessageBox.warning(self, "خطا", "ابتدا باید یک کتاب در انبار تعریف کنید.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("ثبت موجودی جدید و خرید دسته‌ای کتاب (Batch Restock)")
+        dlg.resize(450, 280)
+        form = QFormLayout(dlg)
+
+        cmb_book = QComboBox()
+        for bk in all_books:
+            cmb_book.addItem(f"{bk['title']} (موجودی فعلی: {bk['stock_quantity']})", bk["id"])
+
+        if book_id:
+            idx = cmb_book.findData(book_id)
+            if idx >= 0:
+                cmb_book.setCurrentIndex(idx)
+
+        spn_qty = QDoubleSpinBox()
+        spn_qty.setRange(1, 100000)
+        spn_qty.setValue(50)
+        spn_qty.setDecimals(0)
+
+        spn_purchase = QDoubleSpinBox()
+        spn_purchase.setRange(0, 100000000)
+        spn_purchase.setSingleStep(5000)
+        spn_purchase.setDecimals(0)
+
+        spn_sale = QDoubleSpinBox()
+        spn_sale.setRange(0, 100000000)
+        spn_sale.setSingleStep(5000)
+        spn_sale.setDecimals(0)
+
+        curr_bid = cmb_book.currentData()
+        curr_bk = b_repo.get_by_id(curr_bid) if curr_bid else None
+        if curr_bk:
+            spn_purchase.setValue(curr_bk["purchase_price"])
+            spn_sale.setValue(curr_bk["sale_price"])
+
+        def on_book_selected():
+            bid = cmb_book.currentData()
+            bk = b_repo.get_by_id(bid)
+            if bk:
+                spn_purchase.setValue(bk["purchase_price"])
+                spn_sale.setValue(bk["sale_price"])
+
+        cmb_book.currentIndexChanged.connect(on_book_selected)
+
+        txt_pdate = QLineEdit(datetime.now().strftime("%Y-%m-%d"))
+
+        form.addRow("انتخاب کتاب:", cmb_book)
+        form.addRow("تعداد خریداری‌شده (موجودی جدید):", spn_qty)
+        form.addRow("قیمت خرید این پارت (تومان):", spn_purchase)
+        form.addRow("قیمت فروش به دانش‌آموز (تومان):", spn_sale)
+        form.addRow("تاریخ خرید (YYYY-MM-DD):", txt_pdate)
+
+        btn_save = QPushButton("ثبت موجودی جدید")
+        btn_save.setProperty("accent", "true")
+        form.addRow(btn_save)
+
+        def save():
+            bid = cmb_book.currentData()
+            qty = int(spn_qty.value())
+            p_price = spn_purchase.value()
+            s_price = spn_sale.value()
+            p_date = txt_pdate.text().strip() or datetime.now().strftime("%Y-%m-%d")
+
+            if bid and qty > 0:
+                b_repo.restock_book(bid, qty, p_price, s_price, purchase_date=p_date)
+                QMessageBox.information(dlg, "موفقیت", "خرید جدید کتاب با موفقیت ثبت و به انبار اضافه شد.")
+                dlg.accept()
+                self.load_books()
+
+        btn_save.clicked.connect(save)
+        dlg.exec()
+
+    def view_batches_dialog(self, book_id: int):
+        b_repo = BookRepository(self.db_path)
+        book = b_repo.get_by_id(book_id)
+        if not book:
+            return
+
+        batches = b_repo.list_batches(book_id)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"تاریخچه خریدهای دسته‌ای (Batches): {book['title']}")
+        dlg.resize(600, 350)
+        vbox = QVBoxLayout(dlg)
+
+        tbl = QTableWidget()
+        tbl.setColumnCount(5)
+        tbl.setHorizontalHeaderLabels(["تاریخ خرید", "تعداد خریداری‌شده", "تعداد باقیمانده", "قیمت خرید", "قیمت فروش"])
+        tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        vbox.addWidget(tbl)
+
+        tbl.setRowCount(len(batches))
+        for r, b in enumerate(batches):
+            tbl.setItem(r, 0, QTableWidgetItem(gregorian_to_shamsi(b["purchase_date"])))
+            tbl.setItem(r, 1, QTableWidgetItem(to_persian_digits(b["quantity_purchased"])))
+            tbl.setItem(r, 2, QTableWidgetItem(to_persian_digits(b["quantity_remaining"])))
+            tbl.setItem(r, 3, QTableWidgetItem(format_currency(b["purchase_price"])))
+            tbl.setItem(r, 4, QTableWidgetItem(format_currency(b["sale_price"])))
+
+        btn_close = QPushButton("بستن")
+        btn_close.clicked.connect(dlg.accept)
+        vbox.addWidget(btn_close, alignment=Qt.AlignLeft)
+
+        dlg.exec()
 
     def edit_book_dialog(self, book_id: int):
         b_repo = BookRepository(self.db_path)
@@ -1216,7 +1356,7 @@ class TermClassManagementWidget(QWidget):
             return
 
         dlg = QDialog(self)
-        dlg.setWindowTitle(f"ویرایش کتاب: {book['title']}")
+        dlg.setWindowTitle(f"ویرایش عنوان / اصلاح اطلاعات کتاب: {book['title']}")
         form = QFormLayout(dlg)
 
         txt_title = QLineEdit(book["title"])
@@ -1238,8 +1378,8 @@ class TermClassManagementWidget(QWidget):
         spn_stock.setDecimals(0)
 
         form.addRow("عنوان کتاب:", txt_title)
-        form.addRow("قیمت خرید (تومان):", spn_purchase)
-        form.addRow("قیمت فروش (تومان):", spn_sale)
+        form.addRow("قیمت خرید جاری (تومان):", spn_purchase)
+        form.addRow("قیمت فروش جاری (تومان):", spn_sale)
         form.addRow("موجودی انبار:", spn_stock)
 
         btn_save = QPushButton("ذخیره تغییرات")
@@ -1249,7 +1389,14 @@ class TermClassManagementWidget(QWidget):
         def save():
             title = txt_title.text().strip()
             if title:
-                b_repo.update_book(book_id, title, spn_purchase.value(), spn_sale.value(), int(spn_stock.value()))
+                new_stock = int(spn_stock.value())
+                old_stock = book["stock_quantity"]
+                if new_stock > old_stock:
+                    diff = new_stock - old_stock
+                    b_repo.restock_book(book_id, diff, spn_purchase.value(), spn_sale.value())
+                    b_repo.update_book(book_id, title, spn_purchase.value(), spn_sale.value(), new_stock)
+                else:
+                    b_repo.update_book(book_id, title, spn_purchase.value(), spn_sale.value(), new_stock)
                 dlg.accept()
                 self.load_books()
 

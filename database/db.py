@@ -1,6 +1,7 @@
 import os
 import sqlite3
 from typing import Optional
+from datetime import datetime
 
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "parsanik.db")
 
@@ -164,6 +165,19 @@ def init_db(db_path: Optional[str] = None) -> None:
         stock_quantity INTEGER NOT NULL DEFAULT 0
     );
 
+    CREATE TABLE IF NOT EXISTS book_batches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        book_id INTEGER NOT NULL,
+        purchase_date TEXT NOT NULL,
+        quantity_purchased INTEGER NOT NULL,
+        quantity_remaining INTEGER NOT NULL,
+        purchase_price REAL NOT NULL,
+        sale_price REAL NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_book_batches_book ON book_batches(book_id, id);
+
     CREATE TABLE IF NOT EXISTS class_books (
         class_id INTEGER NOT NULL,
         book_id INTEGER NOT NULL,
@@ -263,6 +277,31 @@ def init_db(db_path: Optional[str] = None) -> None:
             CREATE INDEX IF NOT EXISTS idx_enrollments_class ON class_enrollments(class_id);
             CREATE INDEX IF NOT EXISTS idx_enrollments_student ON class_enrollments(student_id);
         """)
+
+    # Migration: Add book_id, book_batch_id, book_unit_cost to payments if not present
+    cursor.execute("PRAGMA table_info(payments)")
+    p_columns = [col[1] for col in cursor.fetchall()]
+    if "book_id" not in p_columns:
+        cursor.execute("ALTER TABLE payments ADD COLUMN book_id INTEGER REFERENCES books(id)")
+    if "book_batch_id" not in p_columns:
+        cursor.execute("ALTER TABLE payments ADD COLUMN book_batch_id INTEGER REFERENCES book_batches(id)")
+    if "book_unit_cost" not in p_columns:
+        cursor.execute("ALTER TABLE payments ADD COLUMN book_unit_cost REAL")
+
+    # Migration: Backfill initial book_batches for existing books with stock_quantity > 0
+    cursor.execute("SELECT id, purchase_price, sale_price, stock_quantity FROM books WHERE stock_quantity > 0")
+    existing_books = cursor.fetchall()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_date = datetime.now().strftime("%Y-%m-%d")
+    for bk in existing_books:
+        bid = bk["id"]
+        cursor.execute("SELECT COUNT(*) FROM book_batches WHERE book_id = ?", (bid,))
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(
+                """INSERT INTO book_batches (book_id, purchase_date, quantity_purchased, quantity_remaining, purchase_price, sale_price, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (bid, now_date, bk["stock_quantity"], bk["stock_quantity"], bk["purchase_price"], bk["sale_price"], now_str)
+            )
 
     # Populate or sync default payment types
     default_types = ["شهریه", "کتاب", "هزینه‌های جانبی", "ثبت‌نام اولیه", "کلاس خصوصی"]

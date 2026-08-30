@@ -121,13 +121,34 @@ class FinancialEngine:
         cat_income = {row[0]: row[1] or 0.0 for row in cursor.fetchall()}
 
         # Calculate Book COGS Purchase Cost (sum of book purchase price for sold books)
-        cursor.execute(
-            """SELECT SUM(b.purchase_price) FROM payments p
-               JOIN payment_types pt ON p.payment_type_id = pt.id
-               JOIN books b ON p.description LIKE '%' || b.title || '%'
-               WHERE p.status = 'paid' AND pt.name = 'کتاب'"""
-        )
-        book_cogs_cost = cursor.fetchone()[0] or 0.0
+        # 1. New style: payments with book_unit_cost recorded directly
+        sql_new_cogs = "SELECT SUM(book_unit_cost) FROM payments WHERE status = 'paid' AND book_id IS NOT NULL"
+        params_new_cogs = []
+        if date_from:
+            sql_new_cogs += " AND paid_date >= ?"
+            params_new_cogs.append(date_from)
+        if date_to:
+            sql_new_cogs += " AND paid_date <= ?"
+            params_new_cogs.append(date_to)
+        cursor.execute(sql_new_cogs, params_new_cogs)
+        new_cogs = cursor.fetchone()[0] or 0.0
+
+        # 2. Legacy fallback: historical payments recorded before batch migration (book_id IS NULL)
+        sql_legacy_cogs = """SELECT SUM(b.purchase_price) FROM payments p
+                             JOIN payment_types pt ON p.payment_type_id = pt.id
+                             JOIN books b ON p.description LIKE '%' || b.title || '%'
+                             WHERE p.status = 'paid' AND pt.name = 'کتاب' AND p.book_id IS NULL"""
+        params_leg_cogs = []
+        if date_from:
+            sql_legacy_cogs += " AND p.paid_date >= ?"
+            params_leg_cogs.append(date_from)
+        if date_to:
+            sql_legacy_cogs += " AND p.paid_date <= ?"
+            params_leg_cogs.append(date_to)
+        cursor.execute(sql_legacy_cogs, params_leg_cogs)
+        legacy_cogs = cursor.fetchone()[0] or 0.0
+
+        book_cogs_cost = new_cogs + legacy_cogs
 
         # Expenses breakdown by category
         sql_exp = "SELECT category, SUM(amount) FROM expenses WHERE 1=1"
