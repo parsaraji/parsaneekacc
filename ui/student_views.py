@@ -3,7 +3,7 @@ import shutil
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QComboBox, QTextEdit,
     QDialog, QFormLayout, QMessageBox, QTabWidget, QFileDialog, QListWidget, QListWidgetItem,
     QCheckBox, QDoubleSpinBox, QGroupBox
@@ -1141,6 +1141,7 @@ class TermClassManagementWidget(QWidget):
         self.term_repo = TermRepository(db_path)
         self.class_repo = ClassRepository(db_path)
         self.student_repo = StudentRepository(db_path)
+        self.financial_engine = FinancialEngine(db_path)
         self.init_ui()
 
     def init_ui(self):
@@ -1206,10 +1207,221 @@ class TermClassManagementWidget(QWidget):
         b_layout.addWidget(self.tbl_books)
         tabs.addTab(self.tab_books, "انبار کتاب‌ها و کالاها")
 
+        # Tab 3: Book Accounting & Financial Analytics (حسابداری انبار کتاب)
+        self.tab_book_acc = QWidget()
+        ba_lay = QVBoxLayout(self.tab_book_acc)
+
+        # Filter bar
+        f_box = QHBoxLayout()
+        self.txt_ba_date_from = QLineEdit()
+        self.txt_ba_date_from.setPlaceholderText("از تاریخ (YYYY-MM-DD)")
+
+        self.txt_ba_date_to = QLineEdit()
+        self.txt_ba_date_to.setPlaceholderText("تا تاریخ (YYYY-MM-DD)")
+
+        self.cmb_ba_book = QComboBox()
+
+        self.cmb_ba_status = QComboBox()
+        self.cmb_ba_status.addItem("همه وضعیت‌ها", "")
+        self.cmb_ba_status.addItem("پرداخت‌شده", "paid")
+        self.cmb_ba_status.addItem("معوق / نسیه", "pending")
+
+        btn_ba_filter = QPushButton("اعمال فیلتر")
+        btn_ba_filter.setProperty("accent", "true")
+        btn_ba_filter.clicked.connect(self.load_book_accounting_report)
+
+        f_box.addWidget(QLabel("از:"))
+        f_box.addWidget(self.txt_ba_date_from, 1)
+        f_box.addWidget(QLabel("تا:"))
+        f_box.addWidget(self.txt_ba_date_to, 1)
+        f_box.addWidget(QLabel("کتاب:"))
+        f_box.addWidget(self.cmb_ba_book, 2)
+        f_box.addWidget(QLabel("وضعیت:"))
+        f_box.addWidget(self.cmb_ba_status, 1)
+        f_box.addWidget(btn_ba_filter)
+        ba_lay.addLayout(f_box)
+
+        # Financial Summary Widgets Group
+        gb_sum = QGroupBox("خلاصه عملکرد مالی انبار کتاب")
+        gb_lay = QGridLayout(gb_sum)
+
+        self.lbl_ba_pur_cost = QLabel("-")
+        self.lbl_ba_sales_rev = QLabel("-")
+        self.lbl_ba_cogs = QLabel("-")
+        self.lbl_ba_profit = QLabel("-")
+        self.lbl_ba_discounts = QLabel("-")
+        self.lbl_ba_receivables = QLabel("-")
+        self.lbl_ba_inv_value = QLabel("-")
+
+        gb_lay.addWidget(QLabel("هزینه خرید در بازه:"), 0, 0)
+        gb_lay.addWidget(self.lbl_ba_pur_cost, 0, 1)
+        gb_lay.addWidget(QLabel("درآمد فروش وصول‌شده:"), 0, 2)
+        gb_lay.addWidget(self.lbl_ba_sales_rev, 0, 3)
+        gb_lay.addWidget(QLabel("بهای تمام‌شده (COGS):"), 0, 4)
+        gb_lay.addWidget(self.lbl_ba_cogs, 0, 5)
+
+        gb_lay.addWidget(QLabel("سود ناخالص کتاب:"), 1, 0)
+        gb_lay.addWidget(self.lbl_ba_profit, 1, 1)
+        gb_lay.addWidget(QLabel("مجموع تخفیفات:"), 1, 2)
+        gb_lay.addWidget(self.lbl_ba_discounts, 1, 3)
+        gb_lay.addWidget(QLabel("مطالبات معوق کتاب:"), 1, 4)
+        gb_lay.addWidget(self.lbl_ba_receivables, 1, 5)
+
+        gb_lay.addWidget(QLabel("ارزش فعلی انبار باقیمانده:"), 2, 0)
+        gb_lay.addWidget(self.lbl_ba_inv_value, 2, 1)
+
+        ba_lay.addWidget(gb_sum)
+
+        # Inner Sub-tabs for Purchases vs Sales
+        sub_tabs = QTabWidget()
+
+        # Sub-tab 1: Purchases Table
+        st_pur = QWidget()
+        pur_lay = QVBoxLayout(st_pur)
+        p_hdr = QHBoxLayout()
+        btn_exp_pur = QPushButton("خروجی اکسل خریدها")
+        btn_exp_pur.setProperty("accent", "true")
+        btn_exp_pur.clicked.connect(self.export_purchases_excel)
+        p_hdr.addStretch()
+        p_hdr.addWidget(btn_exp_pur)
+        pur_lay.addLayout(p_hdr)
+
+        self.tbl_ba_purchases = QTableWidget()
+        self.tbl_ba_purchases.setColumnCount(6)
+        self.tbl_ba_purchases.setHorizontalHeaderLabels(["تاریخ خرید", "عنوان کتاب", "تعداد خریداری‌شده", "تعداد باقیمانده", "قیمت خرید واحد (تومان)", "جمع مبلغ خرید (تومان)"])
+        self.tbl_ba_purchases.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        pur_lay.addWidget(self.tbl_ba_purchases)
+        sub_tabs.addTab(st_pur, "لیست خریدها و خریدهای دسته‌ای (Batches)")
+
+        # Sub-tab 2: Sales & Debts Table
+        st_sales = QWidget()
+        sales_lay = QVBoxLayout(st_sales)
+        s_hdr = QHBoxLayout()
+        btn_exp_sales = QPushButton("خروجی اکسل فروش‌ها")
+        btn_exp_sales.setProperty("accent", "true")
+        btn_exp_sales.clicked.connect(self.export_sales_excel)
+        s_hdr.addStretch()
+        s_hdr.addWidget(btn_exp_sales)
+        sales_lay.addLayout(s_hdr)
+
+        self.tbl_ba_sales = QTableWidget()
+        self.tbl_ba_sales.setColumnCount(8)
+        self.tbl_ba_sales.setHorizontalHeaderLabels(["تاریخ", "عنوان کتاب", "نام دانش‌آموز", "مبلغ نهایی (تومان)", "تخفیف (تومان)", "بهای تمام‌شده (تومان)", "سود تراکنش (تومان)", "وضعیت"])
+        self.tbl_ba_sales.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        sales_lay.addWidget(self.tbl_ba_sales)
+        sub_tabs.addTab(st_sales, "لیست فروش‌ها و مطالبات معوق")
+
+        ba_lay.addWidget(sub_tabs)
+        tabs.addTab(self.tab_book_acc, "حسابداری انبار کتاب")
+
         layout.addWidget(tabs)
 
         self.load_classes()
+        self.populate_book_filter_combo()
         self.load_books()
+        self.load_book_accounting_report()
+
+    def populate_book_filter_combo(self):
+        self.cmb_ba_book.clear()
+        self.cmb_ba_book.addItem("همه کتاب‌ها", None)
+        b_repo = BookRepository(self.db_path)
+        for bk in b_repo.list_books():
+            self.cmb_ba_book.addItem(bk["title"], bk["id"])
+
+    def load_book_accounting_report(self):
+        d_from = to_latin_digits(self.txt_ba_date_from.text().strip())
+        d_to = to_latin_digits(self.txt_ba_date_to.text().strip())
+        bid = self.cmb_ba_book.currentData()
+        st_flt = self.cmb_ba_status.currentData()
+
+        rep = self.financial_engine.get_book_inventory_financial_report(
+            date_from=d_from,
+            date_to=d_to,
+            book_id=bid,
+            status_filter=st_flt
+        )
+
+        # Update Summary Labels
+        self.lbl_ba_pur_cost.setText(format_currency(rep["total_purchase_cost"]))
+        self.lbl_ba_sales_rev.setText(format_currency(rep["total_book_sales_revenue"]))
+        self.lbl_ba_cogs.setText(format_currency(rep["total_cogs"]))
+
+        profit = rep["book_gross_profit"]
+        self.lbl_ba_profit.setText(format_currency(profit))
+        if profit >= 0:
+            self.lbl_ba_profit.setStyleSheet("color: #27AE60; font-weight: bold;")
+        else:
+            self.lbl_ba_profit.setStyleSheet("color: #C0392B; font-weight: bold;")
+
+        self.lbl_ba_discounts.setText(format_currency(rep["total_discounts"]))
+        self.lbl_ba_receivables.setText(format_currency(rep["total_outstanding_receivables"]))
+        self.lbl_ba_inv_value.setText(format_currency(rep["current_inventory_value"]))
+
+        # Populate Purchases Table
+        purchases = rep["purchase_batches"]
+        self.tbl_ba_purchases.setRowCount(len(purchases))
+        for r, p in enumerate(purchases):
+            self.tbl_ba_purchases.setItem(r, 0, QTableWidgetItem(gregorian_to_shamsi(p["purchase_date"])))
+            self.tbl_ba_purchases.setItem(r, 1, QTableWidgetItem(p.get("book_title") or "-"))
+            self.tbl_ba_purchases.setItem(r, 2, QTableWidgetItem(to_persian_digits(p["quantity_purchased"])))
+            self.tbl_ba_purchases.setItem(r, 3, QTableWidgetItem(to_persian_digits(p["quantity_remaining"])))
+            self.tbl_ba_purchases.setItem(r, 4, QTableWidgetItem(format_currency(p["purchase_price"])))
+            total_pur = p["quantity_purchased"] * p["purchase_price"]
+            self.tbl_ba_purchases.setItem(r, 5, QTableWidgetItem(format_currency(total_pur)))
+
+        # Populate Sales Table
+        sales = rep["sales_transactions"]
+        self.tbl_ba_sales.setRowCount(len(sales))
+        status_map = {"paid": "پرداخت‌شده", "pending": "معوق / نسیه", "partial": "تسویه بخشی"}
+        for r, s in enumerate(sales):
+            p_date = gregorian_to_shamsi(s.get("paid_date", ""))
+            self.tbl_ba_sales.setItem(r, 0, QTableWidgetItem(p_date))
+            self.tbl_ba_sales.setItem(r, 1, QTableWidgetItem(s.get("book_title") or "-"))
+            self.tbl_ba_sales.setItem(r, 2, QTableWidgetItem(s.get("student_name") or "-"))
+            self.tbl_ba_sales.setItem(r, 3, QTableWidgetItem(format_currency(s.get("amount", 0))))
+            self.tbl_ba_sales.setItem(r, 4, QTableWidgetItem(format_currency(s.get("discount_total", 0))))
+            self.tbl_ba_sales.setItem(r, 5, QTableWidgetItem(format_currency(s.get("unit_cost", 0))))
+
+            p_item = QTableWidgetItem(format_currency(s.get("transaction_profit", 0)))
+            if s.get("transaction_profit", 0) >= 0:
+                p_item.setForeground(Qt.darkGreen)
+            else:
+                p_item.setForeground(Qt.red)
+            self.tbl_ba_sales.setItem(r, 6, p_item)
+
+            st_str = status_map.get(s.get("status"), s.get("status"))
+            st_item = QTableWidgetItem(st_str)
+            if s.get("status") == "paid":
+                st_item.setForeground(Qt.blue)
+            else:
+                st_item.setForeground(Qt.red)
+            self.tbl_ba_sales.setItem(r, 7, st_item)
+
+    def export_purchases_excel(self):
+        fpath, _ = QFileDialog.getSaveFileName(self, "ذخیره خروجی اکسل خریدهای کتاب", "Book_Purchases_Report.xlsx", "Excel Files (*.xlsx)")
+        if fpath:
+            headers = ["تاریخ خرید", "عنوان کتاب", "تعداد خریداری‌شده", "تعداد باقیمانده", "قیمت خرید واحد (تومان)", "جمع مبلغ خرید (تومان)"]
+            rows = []
+            for r in range(self.tbl_ba_purchases.rowCount()):
+                rows.append([self.tbl_ba_purchases.item(r, c).text() for c in range(6)])
+            try:
+                ExcelExporter.export_table_to_excel(fpath, headers, rows, title="گزارش خریدهای انبار کتاب")
+                QMessageBox.information(self, "موفقیت", "فایل اکسل خریدها با موفقیت ذخیره شد.")
+            except Exception as e:
+                QMessageBox.critical(self, "خطا", f"خطا در ذخیره فایل اکسل:\n{e}")
+
+    def export_sales_excel(self):
+        fpath, _ = QFileDialog.getSaveFileName(self, "ذخیره خروجی اکسل فروش‌های کتاب", "Book_Sales_Report.xlsx", "Excel Files (*.xlsx)")
+        if fpath:
+            headers = ["تاریخ", "عنوان کتاب", "نام دانش‌آموز", "مبلغ نهایی (تومان)", "تخفیف (تومان)", "بهای تمام‌شده (تومان)", "سود تراکنش (تومان)", "وضعیت"]
+            rows = []
+            for r in range(self.tbl_ba_sales.rowCount()):
+                rows.append([self.tbl_ba_sales.item(r, c).text() for c in range(8)])
+            try:
+                ExcelExporter.export_table_to_excel(fpath, headers, rows, title="گزارش فروش و مطالبات انبار کتاب")
+                QMessageBox.information(self, "موفقیت", "فایل اکسل فروش‌ها با موفقیت ذخیره شد.")
+            except Exception as e:
+                QMessageBox.critical(self, "خطا", f"خطا در ذخیره فایل اکسل:\n{e}")
 
     def load_books(self):
         b_repo = BookRepository(self.db_path)
@@ -1314,6 +1526,8 @@ class TermClassManagementWidget(QWidget):
                 QMessageBox.information(dlg, "موفقیت", "خرید جدید کتاب با موفقیت ثبت و به انبار اضافه شد.")
                 dlg.accept()
                 self.load_books()
+                self.populate_book_filter_combo()
+                self.load_book_accounting_report()
 
         btn_save.clicked.connect(save)
         dlg.exec()
@@ -1442,6 +1656,8 @@ class TermClassManagementWidget(QWidget):
                 b_repo.add_book(title, spn_purchase.value(), spn_sale.value(), int(spn_stock.value()))
                 dlg.accept()
                 self.load_books()
+                self.populate_book_filter_combo()
+                self.load_book_accounting_report()
 
         btn_save.clicked.connect(save)
         dlg.exec()

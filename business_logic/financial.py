@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from database.db import get_connection
 
 class FinancialEngine:
@@ -189,4 +189,125 @@ class FinancialEngine:
             "expenses_breakdown": exp_by_cat,
             "net_income": total_income - total_expenses,
             "total_outstanding_debt": total_outstanding_debt
+        }
+
+    def get_book_inventory_financial_report(self, date_from: str = "", date_to: str = "", book_id: Optional[int] = None, status_filter: str = "") -> Dict[str, Any]:
+        """
+        Calculates book accounting metrics:
+        1. Purchase Cost in period
+        2. Book Sales Revenue (paid)
+        3. COGS for sold books
+        4. Gross Profit (Revenue - COGS)
+        5. Total Discounts on books
+        6. Outstanding Book Receivables (pending/partial)
+        7. Current Inventory Value (quantity_remaining * purchase_price)
+        Plus detailed purchase batches and sales transactions lists.
+        """
+        conn = get_connection(self.db_path)
+        cursor = conn.cursor()
+
+        # 1. Purchases in period
+        sql_purchases = """
+        SELECT bb.*, b.title as book_title
+        FROM book_batches bb
+        JOIN books b ON bb.book_id = b.id
+        WHERE 1=1
+        """
+        params_pur = []
+        if date_from:
+            sql_purchases += " AND bb.purchase_date >= ?"
+            params_pur.append(date_from)
+        if date_to:
+            sql_purchases += " AND bb.purchase_date <= ?"
+            params_pur.append(date_to)
+        if book_id:
+            sql_purchases += " AND bb.book_id = ?"
+            params_pur.append(book_id)
+
+        sql_purchases += " ORDER BY bb.id DESC"
+        cursor.execute(sql_purchases, params_pur)
+        purchase_rows = [dict(r) for r in cursor.fetchall()]
+
+        total_purchase_cost = sum(r["quantity_purchased"] * r["purchase_price"] for r in purchase_rows)
+
+        # 2, 3, 4, 5, 6: Book Payments & Sales
+        sql_sales = """
+        SELECT p.*,
+               s.first_name || ' ' || s.last_name as student_name,
+               COALESCE(b.title, p.description) as book_title
+        FROM payments p
+        JOIN students s ON p.student_id = s.id
+        LEFT JOIN books b ON p.book_id = b.id
+        JOIN payment_types pt ON p.payment_type_id = pt.id
+        WHERE (p.book_id IS NOT NULL OR pt.name = 'کتاب')
+        """
+        params_sales = []
+        if date_from:
+            sql_sales += " AND p.paid_date >= ?"
+            params_sales.append(date_from)
+        if date_to:
+            sql_sales += " AND p.paid_date <= ?"
+            params_sales.append(date_to)
+        if book_id:
+            sql_sales += " AND p.book_id = ?"
+            params_sales.append(book_id)
+        if status_filter:
+            if status_filter == "paid":
+                sql_sales += " AND p.status = 'paid'"
+            elif status_filter in ("pending", "partial", "unpaid"):
+                sql_sales += " AND p.status IN ('pending', 'partial')"
+
+        sql_sales += " ORDER BY p.paid_date DESC, p.paid_time DESC"
+        cursor.execute(sql_sales, params_sales)
+        sales_rows = [dict(r) for r in cursor.fetchall()]
+
+        total_book_sales_revenue = 0.0
+        total_cogs = 0.0
+        total_discounts = 0.0
+        total_outstanding_receivables = 0.0
+
+        for r in sales_rows:
+            st = r["status"]
+            amt = r.get("amount", 0.0) or 0.0
+            disc_amt = (r.get("discount_amount") or 0.0) + (amt * (r.get("discount_percent") or 0.0) / 100.0)
+            unit_cost = r.get("book_unit_cost") if r.get("book_unit_cost") is not None else 0.0
+
+            r["discount_total"] = disc_amt
+            r["unit_cost"] = unit_cost
+            r["transaction_profit"] = (amt - unit_cost) if st == "paid" else 0.0
+
+            if st == "paid":
+                total_book_sales_revenue += amt
+                total_cogs += unit_cost
+                total_discounts += disc_amt
+            else:
+                total_outstanding_receivables += amt
+
+        book_gross_profit = total_book_sales_revenue - total_cogs
+
+        # 7. Current Remaining Inventory Value (current state, un-filtered by date)
+        sql_val = """
+        SELECT SUM(quantity_remaining * purchase_price)
+        FROM book_batches
+        WHERE 1=1
+        """
+        params_val = []
+        if book_id:
+            sql_val += " AND book_id = ?"
+            params_val.append(book_id)
+        cursor.execute(sql_val, params_val)
+        current_inventory_value = cursor.fetchone()[0] or 0.0
+
+        conn.close()
+
+        return {
+            "total_purchase_cost": total_purchase_cost,
+            "total_book_sales_revenue": total_book_sales_revenue,
+            "total_cogs": total_cogs,
+            "book_gross_profit": book_gross_profit,
+            "total_discounts": total_discounts,
+            "total_outstanding_receivables": total_outstanding_receivables,
+            "current_inventory_value": current_inventory_value,
+            "purchase_batches": purchase_rows,
+            "sales_transactions": sales_rows
         }

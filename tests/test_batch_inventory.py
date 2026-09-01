@@ -97,6 +97,57 @@ def test_enrollment_records_book_cogs_and_batch_id():
     assert summary["book_gross_profit"] == 2000
 
 
+def test_book_inventory_financial_report():
+    b_repo = BookRepository(TEST_DB)
+    bid = b_repo.add_book("شیمی جامع", purchase_price=1000, sale_price=2000, stock_quantity=100)
+
+    st_repo = StudentRepository(TEST_DB)
+    sid1 = st_repo.create_student("سارا", "کاظمی")
+    sid2 = st_repo.create_student("رضا", "نوری")
+
+    pay_repo = PaymentRepository(TEST_DB)
+
+    # 1. Paid sale for sid1
+    c1 = b_repo.consume_stock_fifo(bid, 1)
+    pay_repo.record_payment(
+        student_id=sid1,
+        payment_type_id=1,
+        amount=2000,
+        method="cash",
+        description="کتاب شیمی جامع",
+        status="paid",
+        book_id=bid,
+        book_batch_id=c1[0]["batch_id"],
+        book_unit_cost=1000
+    )
+
+    # 2. Pending debt for sid2
+    c2 = b_repo.consume_stock_fifo(bid, 1)
+    pay_repo.record_payment(
+        student_id=sid2,
+        payment_type_id=1,
+        amount=2000,
+        method="cash",
+        description="کتاب شیمی جامع",
+        status="pending",
+        book_id=bid,
+        book_batch_id=c2[0]["batch_id"],
+        book_unit_cost=1000
+    )
+
+    fin = FinancialEngine(TEST_DB)
+    report = fin.get_book_inventory_financial_report(book_id=bid)
+
+    assert report["total_purchase_cost"] == 100000  # 100 * 1000
+    assert report["total_book_sales_revenue"] == 2000
+    assert report["total_cogs"] == 1000
+    assert report["book_gross_profit"] == 1000
+    assert report["total_outstanding_receivables"] == 2000
+    assert report["current_inventory_value"] == 98000  # 98 * 1000
+    assert len(report["purchase_batches"]) == 1
+    assert len(report["sales_transactions"]) == 2
+
+
 def test_backfill_existing_books_on_init_db():
     # Insert raw book into sqlite directly without batch record to simulate old db
     conn = get_connection(TEST_DB)
