@@ -120,6 +120,7 @@ def init_db(db_path: Optional[str] = None) -> None:
         term_id INTEGER,
         payment_type_id INTEGER NOT NULL,
         amount REAL NOT NULL,
+        original_amount REAL,
         discount_percent REAL DEFAULT 0,
         discount_amount REAL DEFAULT 0,
         late_fee_amount REAL DEFAULT 0,
@@ -287,6 +288,22 @@ def init_db(db_path: Optional[str] = None) -> None:
         cursor.execute("ALTER TABLE payments ADD COLUMN book_batch_id INTEGER REFERENCES book_batches(id)")
     if "book_unit_cost" not in p_columns:
         cursor.execute("ALTER TABLE payments ADD COLUMN book_unit_cost REAL")
+    if "original_amount" not in p_columns:
+        cursor.execute("ALTER TABLE payments ADD COLUMN original_amount REAL")
+
+    # Migration: Backfill original_amount for payments where original_amount IS NULL
+    cursor.execute("SELECT id, amount, discount_amount, discount_percent FROM payments WHERE original_amount IS NULL")
+    p_rows = cursor.fetchall()
+    for pr in p_rows:
+        pid = pr["id"]
+        amt = pr["amount"]
+        d_amt = pr["discount_amount"] or 0.0
+        d_pct = pr["discount_percent"] or 0.0
+        if d_amt == 0 and d_pct == 0:
+            orig = amt
+        else:
+            orig = amt + d_amt
+        cursor.execute("UPDATE payments SET original_amount = ? WHERE id = ?", (orig, pid))
 
     # Migration: Backfill initial book_batches for existing books with stock_quantity > 0
     cursor.execute("SELECT id, purchase_price, sale_price, stock_quantity FROM books WHERE stock_quantity > 0")

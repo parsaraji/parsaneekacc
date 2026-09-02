@@ -67,9 +67,9 @@ class FinancialEngine:
         )
         total_pending = cursor.fetchone()[0] or 0.0
 
-        # Total discounts
+        # Total discounts = SUM(COALESCE(original_amount, amount + discount_amount) - amount)
         cursor.execute(
-            "SELECT SUM(discount_amount + (amount * discount_percent / 100.0)) FROM payments WHERE student_id = ?",
+            "SELECT SUM(COALESCE(original_amount, amount + discount_amount) - amount) FROM payments WHERE student_id = ?",
             (student_id,)
         )
         total_discount = cursor.fetchone()[0] or 0.0
@@ -269,7 +269,10 @@ class FinancialEngine:
         for r in sales_rows:
             st = r["status"]
             amt = r.get("amount", 0.0) or 0.0
-            disc_amt = (r.get("discount_amount") or 0.0) + (amt * (r.get("discount_percent") or 0.0) / 100.0)
+            orig_amt = r.get("original_amount")
+            if orig_amt is None:
+                orig_amt = amt + (r.get("discount_amount") or 0.0)
+            disc_amt = max(0.0, orig_amt - amt)
             unit_cost = r.get("book_unit_cost") if r.get("book_unit_cost") is not None else 0.0
 
             r["discount_total"] = disc_amt

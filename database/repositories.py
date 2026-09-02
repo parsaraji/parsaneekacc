@@ -2,6 +2,7 @@ import sqlite3
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from database.db import get_connection
+from business_logic.financial import FinancialEngine
 
 class UserRepository:
     def __init__(self, db_path: Optional[str] = None):
@@ -642,15 +643,15 @@ class PaymentRepository:
 
         cursor.execute(
             """INSERT INTO payments (
-                unique_code, student_id, term_id, payment_type_id, amount,
+                unique_code, student_id, term_id, payment_type_id, amount, original_amount,
                 discount_percent, discount_amount, late_fee_amount, method,
                 pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
                 description, due_date, paid_date, paid_time, is_installment,
                 installment_no, installment_total, status, recorded_by_user_id,
                 book_id, book_batch_id, book_unit_cost
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                p_code, student_id, term_id, payment_type_id, amount,
+                p_code, student_id, term_id, payment_type_id, amount, amount,
                 discount_percent, discount_amount, late_fee_amount, method,
                 pos_device_id, card_destination_id, bank_reference_number, card_tracking_code,
                 description, due_date, now_date, now_time, 1 if is_installment else 0,
@@ -915,28 +916,30 @@ class PaymentRepository:
         conn.close()
 
     def apply_discount_to_debt(self, payment_id: int, discount_amount: float = 0.0, discount_percent: float = 0.0) -> None:
-        """Applies a discount to an existing pending debt record, updating discount fields and reducing remaining amount."""
+        """Applies a discount to an existing pending debt record, updating discount fields and reducing remaining amount based on original_amount."""
         conn = get_connection(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT amount, discount_amount FROM payments WHERE id = ?", (payment_id,))
+        cursor.execute("SELECT amount, original_amount, discount_amount, discount_percent FROM payments WHERE id = ?", (payment_id,))
         row = cursor.fetchone()
         if row:
-            curr_amt = row["amount"]
-            calc_disc = discount_amount
-            if discount_percent > 0:
-                calc_disc += (curr_amt * (discount_percent / 100.0))
+            row = dict(row)
+            base_amount = row["original_amount"] if row.get("original_amount") is not None else row["amount"]
 
-            if calc_disc >= curr_amt:
-                new_amt = 0.0
-                status = "paid"
-            else:
-                new_amt = curr_amt - calc_disc
-                status = "pending"
+            total_discount_amount = (row.get("discount_amount") or 0.0) + discount_amount
+            total_discount_percent = (row.get("discount_percent") or 0.0) + discount_percent
+
+            new_amt = FinancialEngine.calculate_discounted_amount(
+                base_amount=base_amount,
+                discount_percent=total_discount_percent,
+                discount_amount=total_discount_amount,
+                late_fee_amount=0
+            )
+            status = "paid" if new_amt <= 0 else "pending"
 
             cursor.execute(
-                """UPDATE payments SET amount = ?, discount_amount = discount_amount + ?, discount_percent = discount_percent + ?, status = ?
+                """UPDATE payments SET amount = ?, original_amount = ?, discount_amount = ?, discount_percent = ?, status = ?
                    WHERE id = ?""",
-                (new_amt, calc_disc, discount_percent, status, payment_id)
+                (new_amt, base_amount, total_discount_amount, total_discount_percent, status, payment_id)
             )
             conn.commit()
         conn.close()

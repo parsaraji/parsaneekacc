@@ -418,12 +418,21 @@ class StudentProfileDialog(QDialog):
     def apply_debt_discount_dialog(self, debt_id: int, current_amount: float):
         dlg = QDialog(self)
         dlg.setWindowTitle("ثبت و اعمال تخفیف روی بدهی دانش‌آموز")
-        dlg.resize(380, 200)
+        dlg.resize(420, 220)
         form = QFormLayout(dlg)
+
+        p_data = self.payment_repo.get_payment_by_id(debt_id)
+        prev_disc_amt = (p_data.get("discount_amount") or 0.0) if p_data else 0.0
+        prev_disc_pct = (p_data.get("discount_percent") or 0.0) if p_data else 0.0
 
         lbl_info = QLabel(f"مبلغ بدهی فعلی: {format_currency(current_amount)}")
         lbl_info.setStyleSheet("font-weight: bold; color: #2C3E50;")
         form.addRow(lbl_info)
+
+        if prev_disc_amt > 0 or prev_disc_pct > 0:
+            lbl_prev = QLabel("این بدهی قبلاً تخفیف خورده است؛ تخفیف جدید به آن اضافه خواهد شد.")
+            lbl_prev.setStyleSheet("color: #E67E22; font-size: 11px;")
+            form.addRow(lbl_prev)
 
         spn_disc_amt = QDoubleSpinBox()
         spn_disc_amt.setRange(0, current_amount)
